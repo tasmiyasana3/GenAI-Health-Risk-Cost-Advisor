@@ -57,7 +57,7 @@ I maintained the strong pipeline developed in my baseline project to ensure accu
 
 ### 2. Machine Learning Model
 
-* **Foundation:** Used the tuned `XGBoost Regressor` from my previous baseline study to ensure reliable cost predictions.
+* **Foundation:** Used the Tuned Gradient Boosting Regressor from my previous baseline study, which was selected for its superior balance of predictive performance, generalization, and business interpretability.
 
 ### 3. GenAI Integration
 
