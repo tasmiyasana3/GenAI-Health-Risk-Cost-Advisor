@@ -1,0 +1,5 @@
+pandas
+gradio
+langchain-core
+langchain-google-genai>=2.0.0
+
