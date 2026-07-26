@@ -21,7 +21,7 @@ from langchain_core.prompts import PromptTemplate
 # Start Google Gemini 2.5 Flash using the required 'models/' server path prefix.
 # We set the temperature low to 0.3 so the AI stays factual and never guesses numbers.
 llm = ChatGoogleGenerativeAI(
-    model="models/gemini-2.5-flash",
+    model="gemini-2.5-flash",
     temperature=0.3
 )
 
@@ -113,20 +113,19 @@ print("LangChain processing architecture linked and ready to process inputs!")
 # and returns the final clean written content directly to the webpage window.
 # ==============================================================================
 def execute_dashboard_analysis(name, age, occupation, smoking, bmi, steps, heart_flag):
-
     print("=== Generate button clicked ===")
 
     try:
-        # Convert the raw True/False checkbox value into a simple plain text string
+        # Convert the checkbox value into readable text for the AI prompt
         heart_status_string = (
             "Yes, customer has a documented history of heart conditions"
             if heart_flag
             else "No documented history of heart disease"
         )
 
-        print("Calling Gemini...")
+        print("Preparing customer profile data...")
 
-        pipeline_result = insurance_ai_pipeline.invoke({
+        pipeline_inputs = {
             "company_cost_avg": str(str_avg_cost),
             "company_steps_avg": str(str_avg_steps),
             "applicant_name": str(name),
@@ -136,20 +135,27 @@ def execute_dashboard_analysis(name, age, occupation, smoking, bmi, steps, heart
             "applicant_bmi": f"{float(bmi):.1f}",
             "applicant_steps": f"{int(steps):,}",
             "applicant_heart_history": heart_status_string
-        })
+        }
 
-        print("Gemini response received!")
+        print("Calling Gemini API...")
+
+        pipeline_result = insurance_ai_pipeline.invoke(pipeline_inputs)
+
+        print("Gemini response received successfully.")
 
         return pipeline_result.content
 
-    except Exception as e:
+    except Exception as error:
         import traceback
 
-        print("========== ERROR ==========")
+        print("========== GEMINI PIPELINE ERROR ==========")
         print(traceback.format_exc())
-        print("===========================")
+        print("===========================================")
 
-        return f"Error:\n\n{str(e)}"
+        return (
+            "### Error generating report\n\n"
+            f"```text\n{type(error).__name__}: {str(error)}\n```"
+        )
 
 # ==============================================================================
 # SECTION 5: WEB VISUAL FRONTEND DESIGN (GRADIO UI)
