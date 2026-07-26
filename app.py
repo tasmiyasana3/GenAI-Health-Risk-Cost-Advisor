@@ -179,3 +179,4 @@ with gr.Blocks(theme=gr.themes.Soft()) as insurance_dashboard_app:
 # Boot up the server application. This launch method works perfectly on Hugging Face Spaces cloud nodes.
 if __name__ == "__main__":
     insurance_dashboard_app.launch()
+
