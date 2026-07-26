@@ -113,24 +113,43 @@ print("LangChain processing architecture linked and ready to process inputs!")
 # and returns the final clean written content directly to the webpage window.
 # ==============================================================================
 def execute_dashboard_analysis(name, age, occupation, smoking, bmi, steps, heart_flag):
-    # Convert the raw True/False checkbox value into a simple plain text string for the AI prompt
-    heart_status_string = "Yes, customer has a documented history of heart conditions" if heart_flag else "No documented history of heart disease"
-    
-    # Run the input data directly through our active LangChain pipeline map
-    pipeline_result = insurance_ai_pipeline.invoke({
-        "company_cost_avg": str(str_avg_cost),
-        "company_steps_avg": str(str_avg_steps),
-        "applicant_name": str(name),
-        "applicant_age": str(int(age)),
-        "applicant_occupation": str(occupation),
-        "applicant_smoking": str(smoking),
-        "applicant_bmi": f"{float(bmi):.1f}",
-        "applicant_steps": f"{int(steps):,}",
-        "applicant_heart_history": heart_status_string
-    })
-    
-    # Extract the core string text content and send it back to the frontend display box
-    return pipeline_result.content
+
+    print("=== Generate button clicked ===")
+
+    try:
+        # Convert the raw True/False checkbox value into a simple plain text string
+        heart_status_string = (
+            "Yes, customer has a documented history of heart conditions"
+            if heart_flag
+            else "No documented history of heart disease"
+        )
+
+        print("Calling Gemini...")
+
+        pipeline_result = insurance_ai_pipeline.invoke({
+            "company_cost_avg": str(str_avg_cost),
+            "company_steps_avg": str(str_avg_steps),
+            "applicant_name": str(name),
+            "applicant_age": str(int(age)),
+            "applicant_occupation": str(occupation),
+            "applicant_smoking": str(smoking),
+            "applicant_bmi": f"{float(bmi):.1f}",
+            "applicant_steps": f"{int(steps):,}",
+            "applicant_heart_history": heart_status_string
+        })
+
+        print("Gemini response received!")
+
+        return pipeline_result.content
+
+    except Exception as e:
+        import traceback
+
+        print("========== ERROR ==========")
+        print(traceback.format_exc())
+        print("===========================")
+
+        return f"Error:\n\n{str(e)}"
 
 # ==============================================================================
 # SECTION 5: WEB VISUAL FRONTEND DESIGN (GRADIO UI)
@@ -178,5 +197,5 @@ with gr.Blocks(theme=gr.themes.Soft()) as insurance_dashboard_app:
 
 # Boot up the server application. This launch method works perfectly on Hugging Face Spaces cloud nodes.
 if __name__ == "__main__":
-    insurance_dashboard_app.launch()
+    insurance_dashboard_app.launch(debug=True)
 
