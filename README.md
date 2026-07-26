@@ -2,10 +2,11 @@
 
 An end-to-end Machine Learning and Generative AI application focused on predicting healthcare insurance costs and providing personalized, data-backed client advisories.
 
-### Live Application
+### Live Application 
 
 [Click here to view the Interactive Dashboard](https://huggingface.co/spaces/TasmiyaSana23/ai-health-risk-and-cost-advisor)
 
+***Deployed using hugging face***
 ---
 
 ## Project Overview
