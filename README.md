@@ -52,21 +52,21 @@ This project builds upon my foundational Health Insurance Cost Prediction projec
 ## System Architecture
 
 Customer Inputs
-        ↓
+        ->
 Input Validation & Data Processing
-        ↓
+        ->
 Gradient Boosting Regressor
-        ↓
+        ->
 Insurance Cost Prediction
-        ↓
+        ->
 LangChain Prompt Template
-        ↓
+        ->
 Google Gemini 3.5 Flash
-        ↓
+        ->
 Risk Assessment & Client Communication
-        ↓
+        ->
 Gradio Dashboard
-        ↓
+        ->
 Hugging Face Spaces
 
 ---
