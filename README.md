@@ -61,7 +61,7 @@ Insurance Cost Prediction
         ↓
 LangChain Prompt Template
         ↓
-Google Gemini 2.5 Flash
+Google Gemini 3.5 Flash
         ↓
 Risk Assessment & Client Communication
         ↓
