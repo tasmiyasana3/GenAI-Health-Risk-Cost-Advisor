@@ -1,7 +1,7 @@
 # ==============================================================================
 # INSURANCE COST & RISK ANALYTICS PRODUCTION CODE
 # This script creates an interactive web dashboard using Gradio. 
-# It connects a machine learning database to a Google Gemini 2.5 AI model.
+# It connects a machine learning database to a Google Gemini 3.5 AI model.
 # The app takes a client's health metrics, calculates company averages, 
 # and automatically creates a data analysis report and a polished customer email.
 # ==============================================================================
@@ -18,10 +18,10 @@ from langchain_core.prompts import PromptTemplate
 # This ensures a seamless, zero-login, instant runtime view for the business user.
 # ==============================================================================
 
-# Start Google Gemini 2.5 Flash using the required 'models/' server path prefix.
+# Start Google Gemini 3.5 Flash.
 # We set the temperature low to 0.3 so the AI stays factual and never guesses numbers.
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.5-flash",
     temperature=0.3
 )
 
@@ -140,10 +140,20 @@ def execute_dashboard_analysis(name, age, occupation, smoking, bmi, steps, heart
         print("Calling Gemini API...")
 
         pipeline_result = insurance_ai_pipeline.invoke(pipeline_inputs)
-
+        
         print("Gemini response received successfully.")
-
-        return pipeline_result.content
+        
+        content = pipeline_result.content
+        
+        # Handle both old and new LangChain response formats
+        if isinstance(content, list):
+            return "\n".join(
+                part["text"]
+                for part in content
+                if isinstance(part, dict) and "text" in part
+            )
+        
+        return str(content)
 
     except Exception as error:
         import traceback
@@ -203,5 +213,4 @@ with gr.Blocks(theme=gr.themes.Soft()) as insurance_dashboard_app:
 
 # Boot up the server application. This launch method works perfectly on Hugging Face Spaces cloud nodes.
 if __name__ == "__main__":
-    insurance_dashboard_app.launch(debug=True)
-
+    insurance_dashboard_app.launch()
