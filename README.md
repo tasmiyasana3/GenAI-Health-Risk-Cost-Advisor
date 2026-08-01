@@ -101,7 +101,7 @@ The pipeline now includes a "Communication Layer" that:
 ## Repository Contents
 
 * `app.py`: Gradio application integrating LangChain, Google Gemini API, and the insurance risk analysis pipeline.
-* `notebook.ipynb`: Full implementation, including EDA, model training, and the GenAI pipeline.
+* `GENAI_InsuranceCostPrediction_Notebook.ipynb`: Full implementation, including EDA, model training, and the GenAI pipeline.
 * `data.csv`: Health insurance dataset (25,000 records).
 * `requirements.txt`: Project dependencies.
 
