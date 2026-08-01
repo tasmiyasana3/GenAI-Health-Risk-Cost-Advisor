@@ -10,7 +10,7 @@ An end-to-end Machine Learning and Generative AI application focused on predicti
 
 ## Project Overview
 
-This project builds upon my foundational Health Insurance Cost Prediction project ([Health Insurance Cost Prediction project](https://github.com/tasmiyasana3/Health-Insurance-Cost-Prediction) by integrating Google Gemini and LangChain to transform machine learning predictions into personalised, business-ready customer communication.
+This project builds upon my foundational Health Insurance Cost Prediction project ([Health Insurance Cost Prediction project])(https://github.com/tasmiyasana3/Health-Insurance-Cost-Prediction) by integrating Google Gemini and LangChain to transform machine learning predictions into personalised, business-ready customer communication.
 
 ---
 
