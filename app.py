@@ -20,14 +20,13 @@ from langchain_core.prompts import PromptTemplate
 # ==============================================================================
 
 
-# Initialize the Google Gemini 3.5 Flash
+# Initialize the Google Gemini 3.6 Flash
 # A low temperature (0.3) keeps the AI responses more consistent and factual.
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
+    model="gemini-3.6-flash",
     temperature=0.3
 )
-
 
 # ==============================================================================
 # SECTION 2: CALCULATE COST & PROFILE BASELINES
