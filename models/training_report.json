@@ -1,0 +1,45 @@
+{
+  "selected_model": "XGBoost Tuned",
+  "selected_feature_set": "original_9_plus_admission_category",
+  "selected_features": [
+    "years_of_insurance_with_us",
+    "regular_checkup_last_year",
+    "adventure_sports",
+    "visited_doctor_last_1_year",
+    "age",
+    "weight",
+    "covered_by_any_other_company",
+    "weight_change_in_last_one_year",
+    "admission_year_recorded",
+    "admission_year_category"
+  ],
+  "iqr_clipping": false,
+  "validation_results": [
+    {
+      "Model": "XGBoost Tuned",
+      "RMSE": 2934.249989349919,
+      "MAE": 2363.523681640625,
+      "R2": 0.9578162431716919
+    },
+    {
+      "Model": "Gradient Boosting Tuned",
+      "RMSE": 2934.5134894675625,
+      "MAE": 2361.3376283268526,
+      "R2": 0.9578086906445914
+    },
+    {
+      "Model": "Random Forest Tuned",
+      "RMSE": 2984.033487176769,
+      "MAE": 2391.7320429070937,
+      "R2": 0.9563727169047521
+    }
+  ],
+  "test_results": {
+    "Model": "XGBoost Tuned",
+    "RMSE": 2994.3663770487406,
+    "MAE": 2401.330322265625,
+    "R2": 0.9565572738647461
+  },
+  "random_state": 42,
+  "admission_year_handling": "Recorded year as category; missing as Unknown; no year imputation"
+}

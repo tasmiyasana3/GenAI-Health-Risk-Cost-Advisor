@@ -1,4 +1,37 @@
+
+# Data processing
 pandas
+numpy
+
+# Data visualization and statistical analysis
+matplotlib
+seaborn
+scipy
+statsmodels
+
+
+# Machine learning and model loading
+scikit-learn
+xgboost
+joblib
+
+# Gradio web interface
 gradio
+
+# Gemini and LangChain
 langchain-core
 langchain-google-genai>=4.2.7
+
+# Environment variables (.env)
+python-dotenv
+
+# PDF document processing for RAG
+pypdf
+
+# FastAPI backend (planned)
+fastapi
+uvicorn
+
+# API and ML testing
+pytest
+httpx
