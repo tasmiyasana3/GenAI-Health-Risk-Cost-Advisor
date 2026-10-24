@@ -15,3 +15,6 @@ __pycache__/
 
 # Local ChromaDB storage
 data/chroma_db/
+
+# Local persistent vector database
+storage/
