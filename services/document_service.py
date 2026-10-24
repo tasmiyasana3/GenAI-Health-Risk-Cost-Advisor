@@ -124,3 +124,62 @@ def retrieve_document_chunks(
     )
 
     return ranked_documents
+
+def answer_indexed_document_question(
+    document_id: str,
+    question: str,
+) -> str:
+    """
+    Answer a question using an already indexed insurance policy.
+
+    Reuses persistent retrieval, reranking, the existing Gemini
+    prompt, and page-citation formatting.
+    """
+    from config import get_llm
+    from services.rag_service import RAG_PROMPT, build_rag_context
+
+    relevant_documents = retrieve_document_chunks(
+        document_id=document_id,
+        question=question,
+    )
+
+    if not relevant_documents:
+        return (
+            "I could not find relevant text "
+            "in the indexed document."
+        )
+
+    relevant_chunks = [
+        {
+            "page": document.metadata["page"],
+            "text": document.page_content,
+        }
+        for document in relevant_documents
+    ]
+
+    context = build_rag_context(relevant_chunks)
+
+    rag_chain = RAG_PROMPT | get_llm()
+
+    response = rag_chain.invoke(
+        {
+            "context": context,
+            "question": question,
+        }
+    )
+
+    response_content = response.content
+
+    if isinstance(response_content, str):
+        return response_content
+
+    if isinstance(response_content, list):
+        text_parts = [
+            part["text"]
+            for part in response_content
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+        ]
+        return "\n".join(text_parts)
+
+    return str(response_content)
