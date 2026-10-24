@@ -1,0 +1,34 @@
+
+[
+  {
+    "question": "What is the waiting period for pre-existing medical conditions?",
+    "expected_answer": "24 continuous months",
+    "expected_pages": [2]
+  },
+  {
+    "question": "When will insurance cover an illness I already had?",
+    "expected_answer": "24 continuous months",
+    "expected_pages": [2]
+  },
+  {
+    "question": "How many hours before planned admission should pre-authorization be requested?",
+    "expected_answer": "72 hours",
+    "expected_pages": [4]
+  },
+  {
+    "question": "Is treatment for an existing illness covered after one year of insurance?",
+    "expected_answer": "24 continuous months",
+    "expected_pages": [2]
+  },
+  {
+    "question": "Will my insurance pay for regular dental treatment?",
+    "expected_answer": "Routine dental treatment is excluded except following a covered accident.",
+    "expected_pages": [3]
+  },
+  {
+    "question": "What is the maximum daily hospital room charge covered?",
+    "expected_answer": "INR 5,000 per day",
+    "expected_pages": [2]
+  }
+
+]

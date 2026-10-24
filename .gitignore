@@ -1,6 +1,17 @@
+# Environment variables and secrets
 .env
+.env.*
+
+# Python virtual environment
 .venv/
+
+# Python cache
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# macOS
 .DS_Store
+
+# Local ChromaDB storage
+data/chroma_db/

@@ -28,6 +28,12 @@ python-dotenv
 # PDF document processing for RAG
 pypdf
 
+# Local semantic embeddings for V3 RAG
+sentence-transformers
+
+# Local vector database for semantic RAG
+chromadb
+
 # FastAPI backend (planned)
 fastapi
 uvicorn
