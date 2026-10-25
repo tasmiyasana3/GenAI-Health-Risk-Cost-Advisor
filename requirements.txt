@@ -41,3 +41,6 @@ uvicorn
 # API and ML testing
 pytest
 httpx
+
+# PostgreSQL driver that allows our FastAPI application to communicate with PostgreSQL.
+psycopg[binary]==3.3.6
