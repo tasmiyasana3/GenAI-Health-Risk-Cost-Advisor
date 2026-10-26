@@ -1,4 +1,3 @@
-
 """
 Phase 4.2 — User registration integration tests.
 
