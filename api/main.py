@@ -25,6 +25,7 @@ from typing import Annotated, Any
 from fastapi.openapi.utils import get_openapi
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
+from api.auth_routes import router as auth_router
 
 from services.ml_service import predict_insurance_cost
 
@@ -52,6 +53,8 @@ app = FastAPI(
     ),
     version="3.0.0",
 )
+# Register authentication endpoints with the main API.
+app.include_router(auth_router)
 
 # Resource limits for local development.
 MAX_UPLOAD_FILES = 3

@@ -4,7 +4,7 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
-
+from uuid import uuid4
 
 # Load database credentials from .env
 load_dotenv()
@@ -106,3 +106,42 @@ def delete_document_record(document_id: str):
         with conn.cursor() as cursor:
             cursor.execute(query, (document_id,))
             return cursor.fetchone() is not None
+
+
+# =============================================================================
+# USER DATABASE OPERATIONS
+# =============================================================================
+
+def create_user(email: str, password_hash: str) -> dict:
+    """Create a user and return safe account details."""
+
+    user_id = uuid4()
+
+    query = """
+        INSERT INTO users (user_id, email, password_hash)
+        VALUES (%s, %s, %s)
+        RETURNING user_id, email, created_at
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                query,
+                (user_id, email, password_hash),
+            )
+            return cursor.fetchone()
+
+
+def get_user_by_email(email: str) -> dict | None:
+    """Retrieve a user by email for registration and login."""
+
+    query = """
+        SELECT user_id, email, password_hash, created_at
+        FROM users
+        WHERE email = %s
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query, (email,))
+            return cursor.fetchone()
