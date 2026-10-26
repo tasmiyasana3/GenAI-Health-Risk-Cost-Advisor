@@ -1,20 +1,28 @@
 
 """PostgreSQL persistence for authentication sessions.
 
-Responsibilities:
-- Create and retrieve sessions.
-- Verify active session status.
-- Atomically rotate refresh-token hashes.
-- Record consumed refresh-token hashes.
-- Revoke sessions during logout.
+PURPOSE
+-------
+Create, read, rotate and revoke database-backed sessions.
 
-Security:
-- Store only refresh-token hashes.
-- Use row-level locking during rotation.
-- Commit token rotation and history together.
-- Never log plaintext refresh tokens.
+ENVIRONMENT / CONFIGURATION
+---------------------------
+Uses PostgreSQL connection settings from database_service.
 
-This module does not generate tokens or set HTTP cookies.
+DEPENDENCIES
+------------
+Python datetime/uuid and services.database_service.
+
+RESPONSIBILITIES / WHAT WE TEST
+-------------------------------
+Validate inputs; create sessions with generated or caller-supplied UUIDs;
+verify ownership and expiry; atomically rotate hashes and retain history;
+revoke sessions.
+
+SECURITY NOTES
+--------------
+Only SHA-256 refresh hashes are stored. Rotation uses row locks and a
+single transaction. Never log plaintext refresh tokens.
 """
 
 from datetime import datetime, timezone
@@ -66,11 +74,20 @@ def create_session(
     user_id: str,
     refresh_token_hash: str,
     expires_at: datetime,
+    session_id: str | None = None,
 ) -> dict:
-    """Create a session for an existing user."""
+    """Create a session with an optional caller-supplied UUID.
+
+    The optional ID allows tokens to be prepared before the INSERT.
+    Existing callers remain compatible and still receive a generated UUID.
+    The database connection commits on success and rolls back on error.
+    """
     validated_user_id = _validate_uuid(user_id)
     validated_hash = _validate_token_hash(refresh_token_hash)
     validated_expiry = _validate_expiry(expires_at)
+    validated_session_id = (
+        _validate_uuid(session_id) if session_id is not None else uuid4()
+    )
 
     query = """
         INSERT INTO public.user_sessions (
@@ -94,7 +111,7 @@ def create_session(
             cursor.execute(
                 query,
                 (
-                    uuid4(),
+                    validated_session_id,
                     validated_user_id,
                     validated_hash,
                     validated_expiry,
