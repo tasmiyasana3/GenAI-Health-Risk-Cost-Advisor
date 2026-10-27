@@ -6,42 +6,41 @@ AUTHENTICATION API ROUTES
 
 PURPOSE
 -------
-Provide registration, password login, and refresh-token rotation
-endpoints for the Insurance Cost and Policy RAG application.
+Provide registration, login, refresh-token rotation, and secure logout
+for the Insurance Cost and Policy RAG application.
 
 ENVIRONMENT / CONFIGURATION
 ---------------------------
 COOKIE_SECURE:
-    true for HTTPS deployments; false for local HTTP development.
+    true for HTTPS; false for local HTTP development.
 
 AUTH_ALLOWED_ORIGINS:
-    Optional comma-separated list of exact trusted frontend origins.
-    If unset, the API's own origin is trusted.
+    Optional comma-separated trusted frontend origins.
+    Defaults to the API's own origin.
 
 REFRESH_TOKEN_EXPIRE_DAYS:
     Existing refresh-token lifetime setting.
 
 DEPENDENCIES
 ------------
-FastAPI, Pydantic, psycopg, and existing authentication services.
+FastAPI, Pydantic, psycopg, existing authentication services.
 
 RESPONSIBILITIES / WHAT WE TEST
 -------------------------------
-1. Register users with hashed passwords.
-2. Authenticate existing users.
-3. Return short-lived access JWTs.
-4. Set restricted HttpOnly refresh cookies.
-5. Validate refresh request origins.
-6. Rotate refresh cookies and issue replacement JWTs.
-7. Return generic authentication and infrastructure errors.
+1. Register accounts.
+2. Authenticate users and issue access JWTs.
+3. Issue restricted HttpOnly refresh cookies.
+4. Validate origins for cookie-authenticated operations.
+5. Rotate refresh tokens.
+6. Revoke sessions during logout.
+7. Clear refresh cookies during logout.
 
 SECURITY NOTES
 --------------
-Never return refresh tokens in JSON.
-Never log plaintext tokens or passwords.
+Never return refresh secrets in JSON.
+Never log credentials.
 Use no-store response headers.
-Use Secure cookies in HTTPS deployments.
-Restrict refresh requests to trusted browser origins.
+Protect cookie-authenticated operations against cross-origin requests.
 """
 
 import logging
@@ -57,8 +56,11 @@ from pydantic import BaseModel, EmailStr, Field
 from services.auth_service import hash_password
 from services.database_service import create_user
 from services.login_service import login_user
+from services.logout_session_service import logout_session
 from services.refresh_session_service import refresh_session
-from services.refresh_token_service import get_refresh_token_lifetime_days
+from services.refresh_token_service import (
+    get_refresh_token_lifetime_days,
+)
 
 
 # =============================================================================
@@ -80,14 +82,14 @@ REFRESH_COOKIE_NAME = "refresh_token"
 # =============================================================================
 
 class RegisterRequest(BaseModel):
-    """Input required to create a user account."""
+    """Input required to register a user."""
 
     email: EmailStr
     password: str = Field(min_length=12, max_length=1024)
 
 
 class RegisterResponse(BaseModel):
-    """Non-sensitive registration response."""
+    """Registration response without sensitive information."""
 
     user_id: str
     email: EmailStr
@@ -95,18 +97,24 @@ class RegisterResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    """Credentials supplied by an existing user."""
+    """Existing-user credentials."""
 
     email: EmailStr
     password: str = Field(min_length=1, max_length=1024)
 
 
 class LoginResponse(BaseModel):
-    """Access-token response without refresh secrets."""
+    """Access-token response."""
 
     access_token: str
     token_type: str
     expires_in: int
+
+
+class LogoutResponse(BaseModel):
+    """Logout confirmation without session information."""
+
+    message: str
 
 
 # =============================================================================
@@ -129,7 +137,7 @@ def set_refresh_cookie(
     secure_cookie: bool,
     refresh_days: int,
 ) -> None:
-    """Issue a restricted HttpOnly refresh-token cookie."""
+    """Issue a restricted HttpOnly refresh cookie."""
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
@@ -141,8 +149,28 @@ def set_refresh_cookie(
     )
 
 
+def clear_refresh_cookie(
+    response: Response,
+    secure_cookie: bool,
+) -> None:
+    """Expire the refresh cookie using its original attributes."""
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        path="/auth",
+        secure=secure_cookie,
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def set_no_store_headers(response: Response) -> None:
+    """Prevent caching of authentication responses."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
 # =============================================================================
-# REFRESH REQUEST ORIGIN VALIDATION
+# COOKIE REQUEST ORIGIN VALIDATION
 # =============================================================================
 
 def normalize_origin(value: str) -> str:
@@ -185,13 +213,10 @@ def normalize_origin(value: str) -> str:
 
 
 def validate_refresh_origin(request: Request) -> None:
-    """Reject refresh requests from untrusted browser origins.
+    """Validate origin for cookie-authenticated requests.
 
-    Origin takes precedence when supplied. If Origin is absent,
-    a same-origin Fetch Metadata header is required.
-
-    This endpoint intentionally fails closed when neither browser
-    origin signal is available.
+    The existing function name is preserved for compatibility
+    with Phase 4.3D tests and integrations.
     """
     configured = os.getenv("AUTH_ALLOWED_ORIGINS", "").strip()
 
@@ -239,7 +264,7 @@ def validate_refresh_origin(request: Request) -> None:
     summary="Register a new user",
 )
 def register_user(request: RegisterRequest):
-    """Validate credentials and create a registered account."""
+    """Create a registered account with a hashed password."""
     normalized_email = str(request.email).strip().lower()
 
     try:
@@ -291,11 +316,9 @@ def login(
     response: Response,
 ):
     """Authenticate credentials and issue access/refresh tokens."""
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
+    set_no_store_headers(response)
 
     try:
-        # Validate settings before creating a database session.
         secure_cookie = get_cookie_secure()
         refresh_days = get_refresh_token_lifetime_days()
 
@@ -357,16 +380,13 @@ def refresh_access_token(
     request: Request,
     response: Response,
 ):
-    """Rotate a refresh cookie and return a replacement access JWT."""
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
+    """Rotate a refresh cookie and issue a replacement access JWT."""
+    set_no_store_headers(response)
 
     try:
-        # Validate configuration before rotating database state.
         secure_cookie = get_cookie_secure()
         refresh_days = get_refresh_token_lifetime_days()
 
-        # Reject untrusted browser origins before reading the cookie.
         validate_refresh_origin(request)
 
         existing_token = request.cookies.get(
@@ -403,4 +423,58 @@ def refresh_access_token(
         raise HTTPException(
             status_code=503,
             detail="Token refresh is temporarily unavailable.",
+        ) from error
+
+
+# =============================================================================
+# PHASE 4.3E - SECURE LOGOUT
+# =============================================================================
+
+@router.post(
+    "/logout",
+    response_model=LogoutResponse,
+    summary="Revoke the current session and clear the refresh cookie",
+)
+def logout(
+    request: Request,
+    response: Response,
+):
+    """Revoke a valid current refresh session.
+
+    Logout is idempotent from the client's perspective.
+    Missing or invalid cookies receive the same success response.
+
+    Database failures are not reported as successful logout.
+    """
+    set_no_store_headers(response)
+
+    try:
+        secure_cookie = get_cookie_secure()
+
+        validate_refresh_origin(request)
+
+        existing_token = request.cookies.get(
+            REFRESH_COOKIE_NAME
+        )
+
+        # The service verifies the current secret before revocation.
+        # A malformed or missing token is treated as already logged out.
+        logout_session(existing_token)
+
+        clear_refresh_cookie(
+            response=response,
+            secure_cookie=secure_cookie,
+        )
+
+        return {"message": "Logged out successfully."}
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception("Logout service failure.")
+
+        raise HTTPException(
+            status_code=503,
+            detail="Logout is temporarily unavailable.",
         ) from error
