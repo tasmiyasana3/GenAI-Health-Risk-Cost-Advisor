@@ -116,3 +116,86 @@ def logout_session(cookie_token: str | None) -> bool:
             )
 
             return cursor.fetchone() is not None
+
+
+# =============================================================================
+# PHASE 4.4.6 - VERIFIED LOGOUT DOCUMENT CLEANUP
+# =============================================================================
+#
+# PURPOSE
+# -------
+# Attempt immediate removal of temporary insurance PDFs after
+# a successfully authenticated logout.
+#
+# SECURITY NOTES
+# --------------
+# The original logout function verifies the refresh secret before
+# revoking the session.
+#
+# The parsed session ID is used for cleanup only when that
+# verification and revocation succeeded.
+#
+# Cleanup failure must not undo a successful session revocation.
+# The background scheduler will retry eligible documents.
+
+import logging
+
+from services.document_lifecycle import cleanup_logged_out_session
+
+
+_logout_logger = logging.getLogger(__name__)
+
+# Retain the existing verified logout implementation.
+_original_logout_session = logout_session
+
+
+def logout_session(cookie_token: str | None) -> bool:
+    """
+    Revoke a verified login session and attempt PDF cleanup.
+
+    Returns
+    -------
+    bool
+        True when the existing logout service revoked a session.
+        False when the token/session was invalid.
+
+    Security
+    --------
+    Never trigger cleanup for an unverified refresh token.
+    """
+    revoked = _original_logout_session(cookie_token)
+
+    if not revoked:
+        return False
+
+    try:
+        # The original service has already verified this token
+        # and successfully revoked its corresponding session.
+        verified_session_id, _ = parse_refresh_token(
+            cookie_token
+        )
+
+        statistics = cleanup_logged_out_session(
+            str(verified_session_id)
+        )
+
+        _logout_logger.info(
+            "document_lifecycle "
+            "event=logout_cleanup "
+            "session_id=%s outcome=complete "
+            "deleted=%d busy=%d failed=%d",
+            verified_session_id,
+            statistics["deleted"],
+            statistics["busy"],
+            statistics["failed"],
+        )
+
+    except Exception:
+        # Authentication remains revoked even if ChromaDB or
+        # PostgreSQL cleanup is temporarily unavailable.
+        _logout_logger.exception(
+            "Verified logout succeeded; "
+            "document cleanup will be retried."
+        )
+
+    return True

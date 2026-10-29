@@ -1,3 +1,4 @@
+
 """Persistent PDF management and evidence-grounded insurance RAG."""
 
 import hashlib
@@ -15,6 +16,7 @@ from services.database_service import (
     get_document,
     list_documents,
     register_document,
+    touch_document,
     update_document_status,
 )
 from services.rag_service import (
@@ -166,11 +168,13 @@ def _stored_document_signature(collection_name: str) -> str:
 
 def _find_duplicate_document(
     documents: list[Document],
+    user_id: str,
+    session_id: str,
 ) -> dict | None:
-    """Find an already-indexed PDF with identical extracted content."""
+    """Find duplicate content within this authenticated session only."""
     incoming_signature = _content_signature(documents)
 
-    for metadata in list_documents():
+    for metadata in list_documents(user_id, session_id):
         if metadata["status"] != "ready":
             continue
 
@@ -369,6 +373,8 @@ def _generate_answer(
 
 def ingest_document(
     pdf_path: str,
+    user_id: str,
+    session_id: str,
     filename: str | None = None,
 ) -> str:
     """Extract and index a PDF unless identical content already exists."""
@@ -383,7 +389,7 @@ def ingest_document(
     if not documents:
         raise ValueError("The PDF contains no indexable text.")
 
-    duplicate = _find_duplicate_document(documents)
+    duplicate = _find_duplicate_document(documents, user_id, session_id)
 
     if duplicate is not None:
         raise ValueError(
@@ -399,6 +405,8 @@ def ingest_document(
         document_id=document_id,
         filename=source_filename,
         collection_name=collection_name,
+        user_id=user_id,
+        session_id=session_id,
     )
 
     try:
@@ -409,7 +417,9 @@ def ingest_document(
             documents=documents,
         )
 
-        update_document_status(document_id, "ready")
+        update_document_status(
+            document_id, "ready", user_id, session_id
+        )
 
     except Exception:
         logger.exception(
@@ -418,7 +428,9 @@ def ingest_document(
         )
 
         try:
-            update_document_status(document_id, "failed")
+            update_document_status(
+                document_id, "failed", user_id, session_id
+            )
         except Exception:
             logger.exception(
                 "Could not update failed document status: %s",
@@ -453,20 +465,28 @@ def ingest_document(
     return document_id
 
 
-def get_document_metadata(document_id: str):
-    """Retrieve registered metadata for one valid document ID."""
+def get_document_metadata(
+    document_id: str,
+    user_id: str,
+    session_id: str,
+):
+    """Retrieve metadata only for the verified owner and session."""
     get_collection_name(document_id)
-    return get_document(document_id)
+    return get_document(document_id, user_id, session_id)
 
 
-def list_indexed_documents():
-    """List document records stored in PostgreSQL."""
-    return list_documents()
+def list_indexed_documents(user_id: str, session_id: str):
+    """List only documents owned by the current login session."""
+    return list_documents(user_id, session_id)
 
 
-def delete_indexed_document(document_id: str) -> bool:
+def delete_indexed_document(
+    document_id: str,
+    user_id: str,
+    session_id: str,
+) -> bool:
     """Delete a document's ChromaDB collection and database record."""
-    metadata = get_document_metadata(document_id)
+    metadata = get_document_metadata(document_id, user_id, session_id)
 
     if metadata is None:
         return False
@@ -483,7 +503,9 @@ def delete_indexed_document(document_id: str) -> bool:
     if collection_name in collection_names:
         client.delete_collection(name=collection_name)
 
-    return delete_document_record(document_id)
+    return delete_document_record(
+        document_id, user_id, session_id
+    )
 
 
 def _retrieve_candidates(
@@ -513,6 +535,9 @@ def retrieve_document_chunks(
     document_id: str,
     question: str,
     top_k: int = TOP_K_RESULTS,
+    *,
+    user_id: str,
+    session_id: str,
 ) -> list[Document]:
     """Retrieve and rerank passages from one ready PDF."""
     _validate_question(question)
@@ -520,13 +545,19 @@ def retrieve_document_chunks(
     if top_k < 1:
         raise ValueError("top_k must be at least 1.")
 
-    metadata = get_document_metadata(document_id)
+    metadata = get_document_metadata(
+        document_id, user_id, session_id
+    )
 
     if metadata is None:
         raise FileNotFoundError("Document not found.")
 
     if metadata["status"] != "ready":
         raise ValueError("Document is not ready for querying.")
+
+    # Refresh activity only for an authorized, unexpired document.
+    if not touch_document(document_id, user_id, session_id):
+        raise FileNotFoundError("Document not found.")
 
     candidates = _retrieve_candidates(
         metadata=metadata,
@@ -544,11 +575,16 @@ def retrieve_document_chunks(
 def answer_indexed_document_question(
     document_id: str,
     question: str,
+    *,
+    user_id: str,
+    session_id: str,
 ) -> str:
     """Answer a question using one indexed document."""
     documents = retrieve_document_chunks(
         document_id=document_id,
         question=question,
+        user_id=user_id,
+        session_id=session_id,
     )
 
     return _generate_answer(question, documents)
@@ -556,12 +592,14 @@ def answer_indexed_document_question(
 
 def _resolve_documents(
     document_ids: list[str] | None,
+    user_id: str,
+    session_id: str,
 ) -> list[dict]:
     """Resolve ready documents and remove identical document content."""
     if document_ids is None:
         documents = [
             document
-            for document in list_documents()
+            for document in list_documents(user_id, session_id)
             if document["status"] == "ready"
         ]
 
@@ -582,7 +620,9 @@ def _resolve_documents(
                 continue
 
             seen_ids.add(document_id)
-            metadata = get_document(document_id)
+            metadata = get_document(
+                document_id, user_id, session_id
+            )
 
             if metadata is None:
                 raise FileNotFoundError(
@@ -607,7 +647,17 @@ def _resolve_documents(
             "per question in this local prototype."
         )
 
-    return _unique_ready_documents(documents)
+    resolved = _unique_ready_documents(documents)
+
+    # Refresh every selected document before ChromaDB retrieval.
+    # A failed refresh means the document expired or its session ended.
+    for metadata in resolved:
+        if not touch_document(
+            metadata["document_id"], user_id, session_id
+        ):
+            raise FileNotFoundError("Document not found.")
+
+    return resolved
 
 
 def _evidence_key(document: Document) -> tuple:
@@ -664,6 +714,9 @@ def _load_all_indexed_chunks(metadata: dict) -> list[Document]:
 def retrieve_multi_document_chunks(
     question: str,
     document_ids: list[str] | None = None,
+    *,
+    user_id: str,
+    session_id: str,
 ) -> tuple[list[Document], list[dict]]:
     """
     Retrieve evidence across multiple PDFs.
@@ -672,7 +725,9 @@ def retrieve_multi_document_chunks(
     Otherwise, use semantic retrieval and cross-encoder reranking.
     """
     _validate_question(question)
-    metadata_list = _resolve_documents(document_ids)
+    metadata_list = _resolve_documents(
+        document_ids, user_id, session_id
+    )
 
     # Complete evidence for small-document broad comparisons.
     if BROAD_QUERY_PATTERN.search(question):
@@ -776,11 +831,16 @@ def retrieve_multi_document_chunks(
 def answer_multi_document_question(
     question: str,
     document_ids: list[str] | None = None,
+    *,
+    user_id: str,
+    session_id: str,
 ) -> dict:
     """Answer across PDFs with traceable evidence."""
     documents, metadata_list = retrieve_multi_document_chunks(
         question=question,
         document_ids=document_ids,
+        user_id=user_id,
+        session_id=session_id,
     )
 
     result = _generate_grounded_response(question, documents)
@@ -794,3 +854,69 @@ def answer_multi_document_question(
     ]
 
     return result
+
+
+# =============================================================================
+# PHASE 4.4.6 - SESSION-COORDINATED DOCUMENT OPERATIONS
+# =============================================================================
+#
+# PURPOSE
+# -------
+# Protect all document operations from concurrent lifecycle cleanup.
+#
+# WHY SESSION-LEVEL LOCKING?
+# --------------------------
+# A single session may contain several PDFs. Ingestion performs
+# duplicate-content scans across the session, and multi-document
+# retrieval can access several collections.
+#
+# Using one advisory lock per login session keeps these operations
+# consistent without introducing complex multi-lock coordination.
+#
+# SECURITY NOTES
+# --------------
+# session_operation verifies the active login session after
+# acquiring the lock.
+#
+# The original functions still enforce document ownership and
+# expiry through get_document(), list_documents(), and
+# touch_document().
+#
+# The outer answer operation holds its lock through Gemini
+# generation, not just through ChromaDB retrieval.
+#
+# Do not remove these wrappers without replacing their
+# concurrency protection.
+
+from services.document_lifecycle import session_operation
+
+
+ingest_document = session_operation(ingest_document)
+
+get_document_metadata = session_operation(
+    get_document_metadata
+)
+
+list_indexed_documents = session_operation(
+    list_indexed_documents
+)
+
+delete_indexed_document = session_operation(
+    delete_indexed_document
+)
+
+retrieve_document_chunks = session_operation(
+    retrieve_document_chunks
+)
+
+answer_indexed_document_question = session_operation(
+    answer_indexed_document_question
+)
+
+retrieve_multi_document_chunks = session_operation(
+    retrieve_multi_document_chunks
+)
+
+answer_multi_document_question = session_operation(
+    answer_multi_document_question
+)

@@ -10,21 +10,30 @@ Responsibilities
 4. Retrieve relevant passages from ChromaDB.
 5. Answer questions using one or multiple indexed documents.
 6. List, inspect and delete indexed documents.
+7. Enforce verified user/session ownership on document routes.
 
-The API runs locally during development. Authentication and
-document ownership will be added before public deployment.
+Document identities are obtained only through the server-side
+authentication dependency, never from user-supplied IDs.
 """
 
 import logging
 import os
 import tempfile
+from contextlib import asynccontextmanager
+
+from services.document_lifecycle import (
+    start_cleanup_scheduler,
+    stop_cleanup_scheduler,
+)
 
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 from fastapi.openapi.utils import get_openapi
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
+
+from api.auth_dependencies import AuthenticatedUser, get_current_user
 from api.auth_routes import router as auth_router
 
 from services.ml_service import predict_insurance_cost
@@ -38,6 +47,43 @@ from services.document_service import (
     list_indexed_documents,
 )
 
+# =============================================================================
+# APPLICATION LIFESPAN - PHASE 4.4.6
+# =============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    PURPOSE
+    -------
+    Manage the startup and shutdown of temporary document cleanup.
+
+    ENVIRONMENT / CONFIGURATION
+    ---------------------------
+    ENABLE_DOCUMENT_CLEANUP controls whether cleanup starts.
+
+    DOCUMENT_CLEANUP_INTERVAL_SECONDS controls cleanup frequency.
+
+    DEPENDENCIES
+    ------------
+    services.document_lifecycle
+
+    RESPONSIBILITIES / WHAT WE TEST
+    -------------------------------
+    1. Start cleanup when FastAPI starts.
+    2. Stop cleanup when FastAPI shuts down.
+    3. Preserve all existing API endpoints.
+
+    SECURITY NOTES
+    --------------
+    Cleanup remains disabled unless explicitly enabled.
+    """
+    start_cleanup_scheduler()
+
+    try:
+        yield
+    finally:
+        stop_cleanup_scheduler()
 
 # =============================================================================
 # APPLICATION CONFIGURATION
@@ -52,8 +98,10 @@ app = FastAPI(
         "AI-powered analysis of multiple insurance documents."
     ),
     version="3.0.0",
+    lifespan=lifespan,
 )
-# Register authentication endpoints with the main API.
+
+# Register existing authentication endpoints.
 app.include_router(auth_router)
 
 # Resource limits for local development.
@@ -61,7 +109,6 @@ MAX_UPLOAD_FILES = 3
 MAX_FILE_SIZE_MB = 10
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
-# A standard PDF begins with these bytes.
 PDF_SIGNATURE = b"%PDF-"
 
 
@@ -134,7 +181,6 @@ def save_uploaded_pdf(upload: UploadFile) -> str:
         ) as temporary_file:
 
             temporary_path = temporary_file.name
-
             total_bytes = 0
             first_chunk = True
 
@@ -144,7 +190,6 @@ def save_uploaded_pdf(upload: UploadFile) -> str:
                 if not chunk:
                     break
 
-                # Validate the PDF signature.
                 if first_chunk:
                     if not chunk.startswith(PDF_SIGNATURE):
                         raise ValueError(
@@ -171,7 +216,6 @@ def save_uploaded_pdf(upload: UploadFile) -> str:
         return temporary_path
 
     except Exception:
-        # Clean up if validation or writing fails.
         if temporary_path and os.path.exists(temporary_path):
             os.unlink(temporary_path)
 
@@ -220,7 +264,7 @@ def predict(request: PredictionRequest):
 
 
 # =============================================================================
-# MULTIPLE PDF UPLOAD
+# AUTHENTICATED MULTIPLE PDF UPLOAD
 # =============================================================================
 
 @app.post(
@@ -234,17 +278,13 @@ def upload_documents(
         ...,
         description="Select up to three PDF files.",
     ),
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
     Upload and index one to three PDFs in a single request.
 
-    FastAPI automatically treats UploadFile as a multipart
-    file input. Swagger should display a file picker.
-
-    Each successfully indexed PDF receives:
-        - A unique document ID
-        - Its own ChromaDB collection
-        - A PostgreSQL metadata record
+    The authenticated user/session is determined by the server.
+    Client-supplied ownership identifiers are not accepted.
 
     If one file fails, other files can still be processed.
     """
@@ -263,13 +303,13 @@ def upload_documents(
             temporary_path = None
 
             try:
-                # Validate and save the uploaded PDF.
                 temporary_path = save_uploaded_pdf(upload)
 
-                # Use the existing document indexing service.
                 document_id = ingest_document(
                     pdf_path=temporary_path,
                     filename=filename,
+                    user_id=current_user.user_id,
+                    session_id=current_user.session_id,
                 )
 
                 logger.info(
@@ -344,16 +384,21 @@ def upload_documents(
 
 
 # =============================================================================
-# DOCUMENT LISTING
+# AUTHENTICATED DOCUMENT LISTING
 # =============================================================================
 
 @app.get("/documents", tags=["Documents"])
-def list_uploaded_documents():
-    """List documents registered in PostgreSQL."""
+def list_uploaded_documents(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """List only documents belonging to the authenticated session."""
 
     try:
         return {
-            "documents": list_indexed_documents()
+            "documents": list_indexed_documents(
+                user_id=current_user.user_id,
+                session_id=current_user.session_id,
+            )
         }
 
     except Exception as error:
@@ -366,7 +411,7 @@ def list_uploaded_documents():
 
 
 # =============================================================================
-# MULTI-DOCUMENT QUESTION ANSWERING
+# AUTHENTICATED MULTI-DOCUMENT QUESTION ANSWERING
 # =============================================================================
 
 @app.post(
@@ -376,16 +421,19 @@ def list_uploaded_documents():
 )
 def ask_multiple_documents(
     request: MultiDocumentQuestionRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
-    Search indexed PDFs, rerank relevant passages and
-    generate a grounded answer using Gemini.
+    Search only authorized PDFs, rerank passages and generate
+    a grounded answer using Gemini.
     """
 
     try:
         result = answer_multi_document_question(
             question=request.question,
             document_ids=request.document_ids,
+            user_id=current_user.user_id,
+            session_id=current_user.session_id,
         )
 
         return {
@@ -396,7 +444,7 @@ def ask_multiple_documents(
     except FileNotFoundError as error:
         raise HTTPException(
             status_code=404,
-            detail=str(error),
+            detail="Document not found.",
         ) from error
 
     except ValueError as error:
@@ -415,15 +463,22 @@ def ask_multiple_documents(
 
 
 # =============================================================================
-# SINGLE DOCUMENT OPERATIONS
+# AUTHENTICATED SINGLE DOCUMENT OPERATIONS
 # =============================================================================
 
 @app.get("/documents/{document_id}", tags=["Documents"])
-def get_document_by_id(document_id: str):
-    """Get metadata for one indexed document."""
+def get_document_by_id(
+    document_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Get metadata only for a document in the authenticated session."""
 
     try:
-        metadata = get_document_metadata(document_id)
+        metadata = get_document_metadata(
+            document_id=document_id,
+            user_id=current_user.user_id,
+            session_id=current_user.session_id,
+        )
 
         if metadata is None:
             raise HTTPException(
@@ -452,11 +507,18 @@ def get_document_by_id(document_id: str):
 
 
 @app.delete("/documents/{document_id}", tags=["Documents"])
-def delete_document(document_id: str):
-    """Delete an indexed PDF and its metadata."""
+def delete_document(
+    document_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Delete only a document belonging to the authenticated session."""
 
     try:
-        deleted = delete_indexed_document(document_id)
+        deleted = delete_indexed_document(
+            document_id=document_id,
+            user_id=current_user.user_id,
+            session_id=current_user.session_id,
+        )
 
         if not deleted:
             raise HTTPException(
@@ -494,13 +556,16 @@ def delete_document(document_id: str):
 def ask_single_document(
     document_id: str,
     request: DocumentQuestionRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Answer a question about one indexed PDF."""
+    """Answer a question using only an authorized indexed PDF."""
 
     try:
         answer = answer_indexed_document_question(
             document_id=document_id,
             question=request.question,
+            user_id=current_user.user_id,
+            session_id=current_user.session_id,
         )
 
         return {
@@ -512,7 +577,7 @@ def ask_single_document(
     except FileNotFoundError as error:
         raise HTTPException(
             status_code=404,
-            detail=str(error),
+            detail="Document not found.",
         ) from error
 
     except ValueError as error:
@@ -528,6 +593,7 @@ def ask_single_document(
             status_code=500,
             detail="Unable to answer the document question.",
         ) from error
+
 
 # =============================================================================
 # OPENAPI FILE UPLOAD SCHEMA COMPATIBILITY
@@ -567,12 +633,9 @@ def custom_openapi():
 
         file_items = files_property.get("items", {})
 
-        # Use the binary file format recognized by Swagger UI.
         file_items["type"] = "string"
         file_items["format"] = "binary"
 
-        # Remove the alternative representation that Swagger
-        # currently renders as an ordinary string field.
         file_items.pop("contentMediaType", None)
 
     app.openapi_schema = schema
