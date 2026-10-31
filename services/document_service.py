@@ -19,6 +19,11 @@ from services.database_service import (
     touch_document,
     update_document_status,
 )
+from services.rag_metrics import (
+    current_metrics,
+    measure_stage,
+    record_rag_request,
+)
 from services.rag_service import (
     CANDIDATE_K,
     TOP_K_RESULTS,
@@ -313,13 +318,22 @@ def _generate_grounded_response(
 
     citations = _build_citations(documents)
 
-    chain = DOCUMENT_PROMPT | get_llm()
-    response = chain.invoke(
-        {
-            "context": _format_evidence(citations),
-            "question": question,
-        }
-    )
+    with measure_stage("context_construction"):
+        context = _format_evidence(citations)
+        metrics = current_metrics()
+
+        if metrics is not None:
+            metrics.evidence_chunks = len(documents)
+            metrics.context_characters = len(context)
+
+    with measure_stage("generation"):
+        chain = DOCUMENT_PROMPT | get_llm()
+        response = chain.invoke(
+            {
+                "context": context,
+                "question": question,
+            }
+        )
 
     answer = _response_text(response)
 
@@ -518,11 +532,17 @@ def _retrieve_candidates(
         name=metadata["collection_name"]
     )
 
-    documents = search_similar_documents(
-        collection=collection,
-        question=question,
-        top_k=candidate_k,
-    )
+    with measure_stage("vector_search"):
+        documents = search_similar_documents(
+            collection=collection,
+            question=question,
+            top_k=candidate_k,
+        )
+
+    metrics = current_metrics()
+
+    if metrics is not None:
+        metrics.candidate_chunks += len(documents)
 
     for document in documents:
         document.metadata["source"] = metadata["filename"]
@@ -565,11 +585,12 @@ def retrieve_document_chunks(
         candidate_k=max(CANDIDATE_K, top_k),
     )
 
-    return rerank_documents(
-        question=question,
-        documents=candidates,
-        top_k=top_k,
-    )
+    with measure_stage("reranking"):
+        return rerank_documents(
+            question=question,
+            documents=candidates,
+            top_k=top_k,
+        )
 
 
 def answer_indexed_document_question(
@@ -676,9 +697,12 @@ def _load_all_indexed_chunks(metadata: dict) -> list[Document]:
         name=metadata["collection_name"]
     )
 
-    stored = collection.get(
-        include=["documents", "metadatas"]
-    )
+    # Broad questions retrieve all indexed passages instead of
+    # performing semantic search. Measure this separately.
+    with measure_stage("full_context_retrieval"):
+        stored = collection.get(
+            include=["documents", "metadatas"]
+        )
 
     texts = stored.get("documents") or []
     metadatas = stored.get("metadatas") or []
@@ -746,6 +770,11 @@ def retrieve_multi_document_chunks(
                 "Comprehensive multi-document context: %d passages",
                 len(complete_context),
             )
+            metrics = current_metrics()
+
+            if metrics is not None:
+                metrics.candidate_chunks += len(complete_context)
+
             return complete_context, metadata_list
 
     # Existing semantic retrieval for other questions.
@@ -762,11 +791,12 @@ def retrieve_multi_document_chunks(
     if not all_candidates:
         return [], metadata_list
 
-    globally_ranked = rerank_documents(
-        question=question,
-        documents=all_candidates,
-        top_k=len(all_candidates),
-    )
+    with measure_stage("reranking"):
+        globally_ranked = rerank_documents(
+            question=question,
+            documents=all_candidates,
+            top_k=len(all_candidates),
+        )
 
     ranked_by_document: dict[str, list[Document]] = {
         metadata["document_id"]: []
@@ -920,3 +950,36 @@ retrieve_multi_document_chunks = session_operation(
 answer_multi_document_question = session_operation(
     answer_multi_document_question
 )
+
+
+# =============================================================================
+# PHASE 4.4.7 - BASELINE RAG PERFORMANCE MEASUREMENT
+# =============================================================================
+#
+# PURPOSE
+# -------
+# Record RAG performance without modifying retrieval or answer behavior.
+#
+# SECURITY NOTES
+# --------------
+# Preserve the existing Phase 4.4.6 session-operation wrappers.
+# Metrics contain numeric measurements, not policy text or credentials.
+
+_original_answer_indexed = answer_indexed_document_question
+_original_answer_multi = answer_multi_document_question
+
+
+def _measured_single_answer(*args, **kwargs):
+    """Measure a complete single-document RAG operation."""
+    with record_rag_request():
+        return _original_answer_indexed(*args, **kwargs)
+
+
+def _measured_multi_answer(*args, **kwargs):
+    """Measure a complete multi-document RAG operation."""
+    with record_rag_request():
+        return _original_answer_multi(*args, **kwargs)
+
+
+answer_indexed_document_question = _measured_single_answer
+answer_multi_document_question = _measured_multi_answer

@@ -1,0 +1,23 @@
+
+[
+  {
+    "id": "deductible",
+    "question": "What is the annual deductible for each selected policy?"
+  },
+  {
+    "id": "waiting_period",
+    "question": "What is the pre-existing-condition waiting period for each selected policy?"
+  },
+  {
+    "id": "room_rent",
+    "question": "What is the room-rent limit for each selected policy?"
+  },
+  {
+    "id": "exclusions",
+    "question": "Compare the exclusions listed in the selected policies."
+  },
+  {
+    "id": "unspecified",
+    "question": "Do the selected policies specify maternity coverage?"
+  }
+]

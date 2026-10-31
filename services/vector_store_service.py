@@ -1,11 +1,59 @@
 
-"""Manage temporary and persistent ChromaDB vector collections."""
+"""
+MODULE NAME
+-----------
+VECTOR STORE SERVICE
+
+PURPOSE
+-------
+Manage persistent and temporary ChromaDB collections used by
+the insurance policy document RAG application.
+
+ENVIRONMENT / CONFIGURATION
+---------------------------
+CHROMA_DB_PATH:
+    Optional directory for persistent vector storage.
+
+    When unset, the application uses:
+        storage/chroma_db/
+
+    Integration tests can override this path with a separate
+    temporary directory.
+
+DEPENDENCIES
+------------
+chromadb
+langchain_core
+services.embedding_service
+
+RESPONSIBILITIES
+----------------
+1. Resolve the persistent ChromaDB storage directory.
+2. Create persistent or temporary ChromaDB clients.
+3. Create and retrieve document collections.
+4. Store embedded document chunks.
+5. Retrieve semantically similar passages.
+
+SECURITY NOTES
+--------------
+The normal application's ChromaDB directory must never be used
+for destructive integration tests.
+
+The storage path is resolved when the client is created so that
+pytest environment overrides take effect.
+
+Collection ownership and session authorization are enforced by
+the document and database services, not by ChromaDB itself.
+"""
 
 import logging
+import os
 import uuid
+
 from pathlib import Path
 
 import chromadb
+
 from chromadb.api.models.Collection import Collection
 from langchain_core.documents import Document
 
@@ -14,15 +62,54 @@ from services.embedding_service import generate_embeddings
 
 logger = logging.getLogger(__name__)
 
-# Local directory for persistent vector storage.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Preserve the existing application storage location.
 CHROMA_DB_PATH = PROJECT_ROOT / "storage" / "chroma_db"
+
+CHROMA_DB_ENV_VAR = "CHROMA_DB_PATH"
+
+
+# =============================================================================
+# PERSISTENT STORAGE CONFIGURATION
+# =============================================================================
+
+def get_chroma_db_path() -> Path:
+    """
+    Return the effective persistent ChromaDB directory.
+
+    The environment override is evaluated on each call rather than
+    at module import time. This allows pytest to configure a separate
+    directory without modifying normal application settings.
+    """
+    configured_path = os.getenv(CHROMA_DB_ENV_VAR)
+
+    if configured_path is None:
+        return CHROMA_DB_PATH.resolve()
+
+    if not configured_path.strip():
+        raise ValueError(
+            "CHROMA_DB_PATH cannot be empty when configured."
+        )
+
+    return Path(configured_path).expanduser().resolve()
 
 
 def get_persistent_client() -> chromadb.ClientAPI:
-    """Connect to the local persistent ChromaDB database."""
+    """
+    Create a ChromaDB client using the effective storage directory.
+
+    ChromaDB manages the persistent files in this directory.
+    """
+    storage_path = get_chroma_db_path()
+
+    logger.debug(
+        "Connecting to persistent ChromaDB: %s",
+        storage_path,
+    )
+
     return chromadb.PersistentClient(
-        path=str(CHROMA_DB_PATH)
+        path=str(storage_path)
     )
 
 
@@ -30,7 +117,7 @@ def get_persistent_collection(
     collection_name: str,
 ) -> Collection:
     """Get an existing persistent collection or create a new one."""
-    if not collection_name.strip():
+    if not isinstance(collection_name, str) or not collection_name.strip():
         raise ValueError("Collection name cannot be empty.")
 
     client = get_persistent_client()
@@ -40,6 +127,10 @@ def get_persistent_collection(
         metadata={"hnsw:space": "cosine"},
     )
 
+
+# =============================================================================
+# LEGACY TEMPORARY COLLECTIONS
+# =============================================================================
 
 def create_vector_collection() -> Collection:
     """
@@ -57,6 +148,10 @@ def create_vector_collection() -> Collection:
     )
 
 
+# =============================================================================
+# DOCUMENT INDEXING
+# =============================================================================
+
 def add_documents(
     collection: Collection,
     documents: list[Document],
@@ -69,7 +164,7 @@ def add_documents(
 
     embeddings = generate_embeddings(texts)
 
-    # These IDs identify individual chunks, not uploaded PDFs.
+    # Chunk IDs identify individual passages, not uploaded PDFs.
     chunk_ids = [
         str(uuid.uuid4())
         for _ in documents
@@ -92,6 +187,10 @@ def add_documents(
         len(documents),
     )
 
+
+# =============================================================================
+# SEMANTIC RETRIEVAL
+# =============================================================================
 
 def search_similar_documents(
     collection: Collection,
