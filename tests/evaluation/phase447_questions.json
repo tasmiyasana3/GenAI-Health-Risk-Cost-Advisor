@@ -2,22 +2,262 @@
 [
   {
     "id": "deductible",
-    "question": "What is the annual deductible for each selected policy?"
+    "category": "policy_comparison",
+    "question": "What is the annual deductible for each selected policy?",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "The annual deductible is INR 10,000."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "The annual deductible is INR 25,000."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [1, 3]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
   },
   {
     "id": "waiting_period",
-    "question": "What is the pre-existing-condition waiting period for each selected policy?"
+    "category": "policy_comparison",
+    "question": "What is the pre-existing-condition waiting period for each selected policy?",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "Pre-existing conditions require 24 continuous months of coverage."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "Pre-existing conditions have a 36-continuous-month waiting period."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [2]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
   },
   {
     "id": "room_rent",
-    "question": "What is the room-rent limit for each selected policy?"
+    "category": "policy_comparison",
+    "question": "What is the room-rent limit for each selected policy?",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "Eligible room rent is limited to INR 5,000 per day."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "Room rent is limited to INR 8,000 per day."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [2]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
   },
   {
     "id": "exclusions",
-    "question": "Compare the exclusions listed in the selected policies."
+    "category": "multi_fact_comparison",
+    "question": "Compare the exclusions listed in the selected policies.",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "Exclusions include routine outpatient care and pharmacy purchases unrelated to eligible hospitalization, non-medically necessary cosmetic treatment, routine dental treatment except after a covered accident, elective laser vision correction, treatment outside India, professional motor racing-related treatment, and preventive health checkups."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "Exclusions include non-medically necessary cosmetic procedures, routine dental care unrelated to covered accidents, elective laser vision correction, non-emergency treatment outside India, unapproved experimental treatment, and routine outpatient pharmacy purchases without eligible hospitalization."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [3]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
   },
   {
     "id": "unspecified",
-    "question": "Do the selected policies specify maternity coverage?"
+    "category": "unsupported_benefit",
+    "question": "Do the selected policies specify maternity coverage?",
+    "expected_behavior": "abstain",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "Maternity and childbirth benefits are not specified. This does not establish whether an individual claim is covered."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "Maternity coverage is not specified. No coverage decision can be inferred from this absence."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [3, 5]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [2]
+      }
+    ]
+  },
+  {
+    "id": "copayment",
+    "category": "policy_comparison",
+    "question": "Compare the co-payment percentages and explain when they apply.",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "A 10% co-payment applies to remaining eligible inpatient claim expenses after the deductible."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "A 15% co-payment applies to remaining eligible expenses after the deductible."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [3]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
+  },
+  {
+    "id": "ambulance_limit",
+    "category": "policy_comparison",
+    "question": "What is the emergency ground ambulance benefit limit under each policy?",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "Emergency ground ambulance transport is covered up to INR 3,000 per incident when directly related to an eligible admission."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "Emergency ground ambulance is covered up to INR 7,500 per incident."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [2]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
+  },
+  {
+    "id": "claim_deadlines",
+    "category": "multi_fact_comparison",
+    "question": "Compare the planned admission pre-authorization deadlines, emergency notification deadlines, and claim submission deadlines.",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "Planned hospitalization requires a pre-authorization request at least 72 hours before admission. Emergency notification is required within 48 hours after admission. Claim documents must be submitted within 30 calendar days after discharge."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "Planned hospitalization requires a pre-authorization request at least 96 hours before admission. Emergency notification is required within 24 hours. Claim documents must be submitted within 21 calendar days after discharge."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [4]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
+  },
+  {
+    "id": "unsupported_premium",
+    "category": "unsupported_information",
+    "question": "What is the guaranteed renewal premium for each selected policy?",
+    "expected_behavior": "abstain",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "No guaranteed renewal premium is provided."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "No guaranteed renewal premium is specified."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [5]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [2]
+      }
+    ]
+  },
+  {
+    "id": "policy_summary",
+    "category": "broad_summary",
+    "question": "Summarize the main benefits, waiting periods, cost-sharing conditions, and exclusions for each selected policy.",
+    "expected_behavior": "answer",
+    "expected_facts": [
+      {
+        "policy": "samplecare_v3",
+        "fact": "The policy includes eligible inpatient treatment, listed day-care procedures and emergency ground ambulance; a 30-day initial non-accidental illness waiting period, 24-month pre-existing-condition waiting period, 12-month cataract waiting period, INR 10,000 annual deductible, 10% co-payment, INR 5,000 daily room-rent cap, and exclusions subject to Section 7."
+      },
+      {
+        "policy": "horizonshield_silver",
+        "fact": "The policy includes eligible inpatient treatment, specified day-care services, emergency ground ambulance and post-hospitalization benefits; a 45-day initial non-accidental illness waiting period, 36-month pre-existing-condition waiting period, 18-month specified elective orthopedic waiting period, INR 25,000 annual deductible, 15% co-payment, INR 8,000 daily room-rent cap, and exclusions subject to Section 5."
+      }
+    ],
+    "expected_evidence": [
+      {
+        "policy": "samplecare_v3",
+        "pages": [1, 2, 3]
+      },
+      {
+        "policy": "horizonshield_silver",
+        "pages": [1]
+      }
+    ]
   }
 ]
