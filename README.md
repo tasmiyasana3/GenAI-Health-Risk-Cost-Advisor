@@ -1,6 +1,6 @@
 # GenAI Health Risk & Cost Advisor — V3
 
-**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 4.4.7B retrieval baseline (2 November 2026) · **Current work:** Phase 4.4.7C controlled retrieval improvement
+**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 4.4.7C retrieval improvement and verification (3 November 2026) · **Next:** Phase 5.1 authenticated Gradio/FastAPI architecture review
 
 An insurance analytics and policy-document intelligence project combining an existing scikit-learn insurance-cost prediction workflow with a FastAPI-based, retrieval-augmented generation (RAG) backend. Users can authenticate, upload text-based **insurance policy PDFs**, and ask evidence-grounded questions about one or more policies.
 
@@ -12,7 +12,7 @@ An insurance analytics and policy-document intelligence project combining an exi
 | --- | --- |
 | Insurance-cost prediction | Existing trained scikit-learn pipeline for structured-input cost estimation; Gemini can explain the estimate and draft an advisory. The LLM does **not** calculate the numerical prediction. |
 | Policy PDF ingestion | PDF text extraction, sentence-aware chunking, MiniLM embeddings, persistent per-document ChromaDB collections and PostgreSQL document registry. |
-| Policy Q&A | Semantic retrieval, cross-encoder reranking, evidence/page citations, single- and multi-policy questions, and Gemini answer generation. Multi-policy selection/comparison and evidence attribution were exercised in Phase 3; broader answer-quality benchmarks remain planned. |
+| Policy Q&A | Semantic retrieval, cross-encoder reranking, evidence/page citations, single- and multi-policy questions, and Gemini answer generation. Phase 4.4.7C adds deterministic multi-topic query planning, bounded per-policy/topic evidence selection, deduplication and global reranking. Broader answer-quality and citation-faithfulness benchmarks remain planned. |
 | Authentication | Registration, Argon2id password hashing, JWT access tokens, PostgreSQL-backed sessions, HttpOnly refresh cookie, refresh rotation and logout. Separate logins for two users and a second login session for one user were verified in manual API checks; simultaneous-load testing remains pending. |
 | Authorization | Authenticated document endpoints enforce user and session ownership, including expiration checks. |
 | Temporary document lifecycle | 30-minute inactivity expiration; cleanup on logout; optional scheduled cleanup every 600 seconds; PostgreSQL advisory locks coordinate document operations and deletion. |
@@ -74,6 +74,7 @@ GenAI-Health-Risk-Cost-Advisor/
 │   ├── document_operation_lock.py
 │   ├── rag_service.py            # Retrieval and grounded policy Q&A
 │   ├── rag_metrics.py            # Phase 4.4.7 request-level measurements
+│   ├── query_planning.py         # Phase 4.4.7C deterministic topic-aware queries
 │   ├── embedding_service.py
 │   ├── vector_store_service.py
 │   ├── database_service.py
@@ -137,8 +138,10 @@ The persistent index avoids re-embedding the entire PDF for every question. Inge
 ```text
 Authenticated question + permitted document IDs
    -> verify session, ownership, expiry and document readiness
-   -> retrieve candidate passages from selected policy collections
-   -> cross-encoder reranking / evidence selection
+   -> build a deterministic retrieval plan for explicit multi-topic questions
+   -> retrieve bounded semantic candidates from authorized policy collections
+   -> deduplicate and cross-encoder rerank against the original question
+   -> select bounded per-policy/topic evidence (hard context ceiling)
    -> evidence identifiers, document names and page references
    -> Gemini answer constrained to supplied policy excerpts
    -> return answer with traceable evidence
@@ -164,7 +167,7 @@ A policy is bound to an authenticated user **and** a login session. Successful a
 | **4.4.6** | Session-scoped temporary PDF lifecycle, inactivity expiry, logout/scheduled cleanup, operation locks and migration 007. | **184 passed, 29 skipped, 0 failed**, plus live PostgreSQL/ChromaDB checks. |
 | **4.4.6A** | Multi-user and multi-session security verification, storage guards, and isolated cleanup integration checks. | **Complete — 31 October 2026; 40 integration tests and 252 database-enabled regression tests passed.** |
 | **4.4.7A–B** | Performance instrumentation and 10-case synthetic retrieval baseline with offline evaluation and failure investigation. | **Baseline complete — 2 November 2026; 3 historical evidence regression tests passed.** |
-| **4.4.7C–D** | Controlled evidence-ordering change, integration tests, before/after checks and documentation. | **Pending implementation and verification; no accuracy gain claimed.** |
+| **4.4.7C** | Deterministic multi-topic query planning, bounded per-policy/topic retrieval and globally reranked evidence selection; synthetic before/after evaluation and regression tests. | **Complete — 3 November 2026; 266 passed, 35 skipped, 12 subtests passed in the full suite; 28 targeted tests passed in a subsequent local rerun.** |
 
 ### Phase 4.4.6 — Temporary document lifecycle (29 October checkpoint)
 
@@ -265,7 +268,7 @@ These checks establish local behavior for the tested paths, not comprehensive se
 
 ## Development progress and end-to-end roadmap
 
-**Current checkpoint (2 November 2026):** The local V3 backend has completed the **Phase 4.4.7B retrieval baseline**. Earlier 29–31 October checkpoints are preserved below as historical evidence. **Phase 4.4.7C is next:** controlled comprehensive-evidence ordering and integration verification; no post-change performance or answer-quality gain is claimed. Phases **5–8** remain future work. This is a milestone status, **not** a claim that the overall product is production-ready or a percentage-complete estimate.
+**Current checkpoint (3 November 2026):** The local V3 backend has completed **Phase 4.4.7C**, including deterministic multi-topic retrieval, bounded evidence selection, offline before/after evaluation and regression verification. Earlier 29 October–2 November checkpoints are preserved below as historical evidence. **Phase 5.1 is next:** review authenticated Gradio/FastAPI architecture and API contracts. Phases **5–8** remain future work. This is a milestone status, **not** a claim that the overall product is production-ready or a percentage-complete estimate.
 
 | Phase | Objective and planned deliverables | Status |
 | --- | --- | --- |
@@ -278,7 +281,7 @@ These checks establish local behavior for the tested paths, not comprehensive se
 | **4.4–4.4.5 — Protected policy access** | Require authenticated active sessions on document endpoints; restrict upload, listing, retrieval, question answering and deletion to authorized user/session scope. | **Complete — verified in current baseline** |
 | **4.4.6 — Temporary policy-document lifecycle** | Session-scoped document ownership; 30-minute inactivity expiry; logout and optional scheduled cleanup of PostgreSQL/ChromaDB; advisory locks; migration 007; unit/integration/API coverage. | **Complete — 184 passed, 29 skipped; live deletion checks passed** |
 | **4.4.6A — Multi-user and multi-session security verification** | Manual cross-user/cross-session API checks, isolated storage guards, cleanup and lock integration tests. | **Complete — 31 October 2026** |
-| **4.4.7 — Retrieval efficiency** | Instrument request stages; evaluate 10 synthetic retrieval cases at K=6/K=16; investigate comprehensive-mode evidence ordering; then implement and test a controlled improvement. | **4.4.7A–B baseline complete; 4.4.7C–D pending** |
+| **4.4.7 — Retrieval efficiency and evidence coverage** | Instrument request stages; evaluate 10 synthetic cases at K=6/K=16; implement deterministic multi-topic retrieval and bounded topic-aware evidence selection; compare frozen baseline and post-change results. | **4.4.7A–C complete — 3 November 2026; no Phase 4.4.7D** |
 | **5 — Authenticated user interface** | Integrate Gradio with the authenticated FastAPI backend: register/login/logout, refresh handling, policy upload/list/selection, multi-policy Q&A, citations, expiry-aware UX and error states. | **Planned** |
 | **6 — End-to-end reliability and security** | Validate full user journeys and failure recovery; concurrent user logins/sessions and overlapping upload/query/delete stress tests; multi-worker scheduler coordination; privacy/security review, negative authorization tests, robust error handling, structured logging/observability and operational safeguards. | **Planned** |
 | **7 — Systematic RAG evaluation and performance** | Broader synthetic insurance-policy benchmark; retrieval relevance/coverage, citation faithfulness, answer correctness, latency and resource measurements; compare approaches and document limitations. | **Planned** |
@@ -286,16 +289,16 @@ These checks establish local behavior for the tested paths, not comprehensive se
 
 ### What is working now versus what is still needed
 
-**Implemented and locally verified:** insurance-cost prediction/advisory as an existing independent workflow; authenticated FastAPI insurance-policy ingestion and question answering; persistent semantic indexes; multi-policy citations; PostgreSQL-backed accounts/sessions; document isolation; inactivity expiry and deletion from both stores. The latest reported database-enabled full regression was **252 passed** on 31 October 2026; the earlier Phase 4.4.6 default checkpoint was **184 passed, 29 skipped, 0 failed**. The skipped cases were not individually audited in that earlier run.
+**Implemented and locally verified:** insurance-cost prediction/advisory as an existing independent workflow; authenticated FastAPI insurance-policy ingestion and question answering; persistent semantic indexes; multi-policy citations; PostgreSQL-backed accounts/sessions; document isolation; inactivity expiry and deletion from both stores; Phase 4.4.7C deterministic multi-topic retrieval and bounded evidence selection. The latest reported Phase 4.4.7C full-suite checkpoint is **266 passed, 35 skipped, 12 subtests passed** (3 November 2026). Historical checkpoints include **252 passed** on 31 October and **184 passed, 29 skipped** for Phase 4.4.6. Skipped cases are not counted as passes.
 
-**Not yet completed:** Phase 4.4.7C–D retrieval-efficiency improvements and post-change verification, an integrated authenticated Gradio frontend, comprehensive security/reliability and retrieval-quality evaluations, and production deployment. A locally functioning API is not equivalent to a deployed or independently security-audited service.
+**Not yet completed:** an integrated authenticated Gradio frontend (Phase 5), comprehensive security/reliability validation (Phase 6), passage-level retrieval and answer/citation-quality evaluation (Phase 7), and CI/CD/deployment (Phase 8). A locally functioning API is not equivalent to a deployed or independently security-audited service.
 
 ### Phase 4.4.7 development checkpoints
 
 1. **4.4.7A — Complete:** Instrument request-stage timing and context-size measurements; retain the single-request latency checkpoint as historical evidence.
 2. **4.4.7B — Complete:** Capture 10 synthetic retrieval cases, evaluate K=6/K=16, investigate four weak broad-query cases, and retain an offline historical-baseline regression test (3 passed).
-3. **4.4.7C — Next:** Integrate deterministic round-robin ordering for eligible comprehensive multi-policy retrieval, with focused unit and integration tests. The standalone ordering helper has 6 locally passing unit tests; production integration has not been verified.
-4. **4.4.7D — Planned:** Re-capture retrieval evidence, compare with the frozen baseline, run relevant regressions, and consolidate the engineering issue log and technical handover.
+3. **4.4.7C — Complete (3 November 2026):** Adopted deterministic topic planning and bounded policy/topic retrieval rather than the proposed standalone round-robin evidence interleaver. Compared the frozen Phase B baseline against Phase C offline retrieval captures, added topic-planning and integration tests, and ran full regression verification.
+4. **No Phase 4.4.7D:** The post-change capture, comparison and verification were completed within Phase 4.4.7C. The next phase is **5.1 — Authenticated UI architecture and API contract review**.
 5. Do not claim token, latency, citation-faithfulness or answer-accuracy gains without corresponding measurements.
 
 **Scope boundary:** Phase 4.4.7 is retrieval optimization, not a redesign of authentication, document ownership, temporary storage or deployment. Its changes must preserve the Phase 4.4.6 security and cleanup behavior.
@@ -507,9 +510,9 @@ python -m unittest discover -s tests/unit_tests -p "test_phase447_broad_retrieva
 
 **Investigation:** The four broad-query cases (`exclusions`, `copayment`, `claim_deadlines`, `policy_summary`) used comprehensive retrieval rather than semantic relevance ranking. Their 16 captured chunks were grouped by source policy: 11 chunks from SampleCare followed by 5 from HorizonShield. Each case covered both expected policy/page evidence groups within K=16; some expected pages fell beyond K=6 because of document-grouped ordering. These ranking metrics are therefore **not directly comparable** between comprehensive and semantic retrieval modes. Page-level matching does not prove passage relevance, citation faithfulness, answer correctness, or actual abstention behavior.
 
-**Focused verification:** `tests/unit_tests/test_phase447_broad_retrieval_baseline.py` passed **3/3** tests, checking presence of the four broad cases, expected policy/page coverage and nonempty captured evidence. This is a **frozen-data regression test**, not a live retrieval integration test. Separately, `tests/unit_tests/test_evidence_ordering.py` passed **6/6** tests for a proposed round-robin helper; that helper and the production integration belong to **4.4.7C**, not the 4.4.7B baseline commit.
+**Focused verification (historical, 2 November):** `tests/unit_tests/test_phase447_broad_retrieval_baseline.py` passed **3/3** tests, checking presence of the four broad cases, expected policy/page coverage and nonempty captured evidence. This is a **frozen-data regression test**, not a live retrieval integration test. A separate experimental round-robin helper passed **6/6** unit tests but was **not adopted or committed**; its untracked module and test were subsequently removed after confirming no production dependency and rerunning 28 Phase C tests successfully.
 
-**Next:** Commit only 4.4.7B evaluation fixtures, scripts, baseline test and this README update. In 4.4.7C, implement and verify balanced comprehensive-evidence ordering with live-path integration tests. In 4.4.7D, compare frozen and new captures and consolidate the engineering issue log. A real token budget, broader answer-quality checks and deployment hardening remain open concerns.
+**Historical next-step note (2 November):** This was the planned 4.4.7B-to-C transition. The actual 4.4.7C implementation, evaluation and regression verification were completed on 3 November; see the Phase 4.4.7C closure addendum below. A real token budget, broader answer-quality checks and deployment hardening remain open concerns.
 
 ### Deferred verification and roadmap ownership
 
@@ -524,4 +527,98 @@ These are **planned checks, not confirmed vulnerabilities**. Keep them in **Phas
 | Working/production database-role privilege audit and least-privilege migration policy | Phase 6 / before deployment | Test-database grants do not verify production privileges |
 | Full privacy/security review, rate limiting, operational retention and monitoring | Phase 6–8 / before deployment | Required before handling real customer documents |
 
-**Version-control checkpoint:** Phase 4.4.6 was committed on 29 October 2026 (`0531b8c`, followed by README formatting commit `f98aefd`). Phase 4.4.6A verification changes and Phase 4.4.7 instrumentation/evaluation scaffolding may be committed together as a clearly labeled checkpoint; this does **not** mean Phase 4.4.7 optimization is complete. Review staged files and exclude backups, secrets and generated storage. A later commit should record measured Phase 4.4.7 optimization and final evaluation results.
+**Version-control checkpoints:** Phase 4.4.6 was committed on 29 October 2026 (`0531b8c`, followed by README formatting commit `f98aefd`). The final Phase 4.4.7C implementation and verification were committed and pushed on 3 November 2026 as `4bf89c2` (`feat(rag): implemented deterministic multi-topic retrieval and validated evidence quality`). Review staged files and exclude backups, secrets and generated storage.
+
+
+---
+
+## Phase 4.4.7C — Deterministic multi-topic retrieval and verification closure (3 November 2026)
+
+**Status:** Complete for the agreed local Phase C scope. **Next:** Phase 5.1 authenticated Gradio/FastAPI architecture and API-contract review. This is not a claim of production readiness, answer correctness or citation faithfulness.
+
+### Decision and implementation
+
+The Phase 4.4.7B investigation exposed early-document bias in broad/comprehensive queries. A standalone round-robin interleaver was considered and unit-tested but **not adopted**: changing only the order of already selected passages does not ensure that the needed policy topics were retrieved. Its untracked helper (`services/evidence_ordering.py`) and dedicated test (`tests/unit_tests/test_evidence_ordering.py`) were removed after checking that no tracked production module depended on them.
+
+The implemented approach uses `services/query_planning.py` to deterministically expand explicit multi-topic insurance questions. `services/document_service.py` searches authorized document collections with bounded per-query candidate counts, deduplicates evidence, reranks candidates against the original question, and selects evidence using per-policy or per-policy/topic limits. `MULTI_MAX_CONTEXT_CHUNKS = 18` is a hard ceiling, **not a target** to fill with irrelevant passages. The existing user/session authorization, expiry and lifecycle-lock boundaries remain in place.
+
+### Retrieval evaluation: frozen Phase B versus Phase C
+
+Ten synthetic questions over two fictional insurance policies were evaluated with policy/page evidence-group proxies. These are **not** passage-level relevance judgments and do not establish generated-answer correctness or citation faithfulness.
+
+| Offline retrieval metric | Phase B @6 | Phase C @6 | Phase B @16 | Phase C @16 |
+| --- | ---: | ---: | ---: | ---: |
+| Hit@K | 0.9000 | 1.0000 | 1.0000 | 1.0000 |
+| Precision@K | 0.3167 | 0.3833 | 0.1898 | 0.3708 |
+| Recall@K | 0.7500 | 1.0000 | 1.0000 | 1.0000 |
+| MRR@K | 0.7333 | 1.0000 | 0.7458 | 1.0000 |
+
+These improvements describe **only the defined synthetic offline retrieval benchmark**. They must not be generalized to all insurance policies or treated as evidence of better Gemini answers.
+
+**Phase C retrieval-only performance capture:** median **248.49 ms**, P95 **2,489.65 ms**, and first cold request approximately **4,217.30 ms**, across 10 requests. No equivalent Phase B latency comparison was established; **no speedup is claimed**. These measurements exclude Gemini generation.
+
+### Verification and committed artifacts
+
+- Full reported Phase C regression: **266 passed, 35 skipped, 12 subtests passed**; skipped cases were not counted as successful checks.
+- Subsequent focused rerun after removing the unused round-robin files: **28 passed in 1.02 s** (`test_query_planning.py`, `test_phase447c_topic_coverage.py`, `test_phase447_comprehensive_ordering.py`).
+- Commit `4bf89c2` on `version_3` includes `services/document_service.py`, `services/query_planning.py`, `tests/evaluation/PHASE_447_COMPLETION.md`, `tests/evaluation/test_phase447c_topic_coverage.py`, `tests/integration_tests/test_phase447_comprehensive_ordering.py`, and `tests/unit_tests/test_query_planning.py`.
+- Local `tests/evaluation/phase447c_performance.local.json` and `tests/evaluation/phase447c_retrieval_results.local.json` remain untracked local captures; do not commit them inadvertently.
+- Phase C retrieval verification used **no Gemini calls**. Phase 7 owns systematic answer correctness, passage-level retrieval relevance, citation faithfulness and abstention evaluation.
+
+## Detailed implementation roadmap — Phases 5–8
+
+The following sections describe **planned work, not implemented features**. Each phase is reviewed and verified before it is marked complete. Phase 5 begins with architecture and API-contract inspection, not immediate frontend rewrites. The existing insurance-cost/risk ML workflow remains separate from contractual insurance-policy RAG. No Gemini API calls should be made during development or verification without explicit approval.
+
+### Phase 5 — Authenticated Gradio user interface
+
+**Objective:** Connect the existing Gradio experience to the authenticated FastAPI insurance-policy backend without weakening the security and temporary-document lifecycle established in Phase 4.
+
+| Step | Planned work | Verification / decision gate |
+| --- | --- | --- |
+| **5.1 — Architecture and API contract review** | Inspect the actual `app.py`, `api/main.py`, authentication routes/dependencies, document endpoints, schemas, `document_service.py`, RAG services and independent ML/advisory services. Map existing request/response contracts, error responses, token/cookie behavior and startup/configuration boundaries. Decide whether the UI calls FastAPI over HTTP or shares selected backend services; document the rationale and smallest safe integration. | Written integration decision, endpoint/contract inventory, state and security boundaries, and explicit list of gaps; no code changes until review is complete. |
+| **5.2 — Authentication and session-aware UI** | Implement registration and login where supported by the current API; authenticated request handling, access-token expiry/refresh behavior, logout and UI state reset. Handle expired/revoked sessions without exposing credentials or using global user state. Preserve the backend as the sole authorization authority. | Tests for successful and failed login, refresh/expiry, logout, session isolation and no cross-user leakage. Confirm cookie handling against actual API behavior. |
+| **5.3 — Insurance-policy document management** | Add authenticated PDF upload, list, select, inspect status and delete flows. Show ready/failed/expired states and understandable validation errors. Respect ownership, per-session visibility, file limits and temporary-document expiry; do not retain document content in shared UI state. | Fictional-policy upload/list/select/delete checks; negative cases for unauthorized, expired, invalid, oversized or failed uploads as supported by the backend. |
+| **5.4 — Evidence-grounded RAG Q&A** | Ask single-policy and multi-policy questions using authorized selected document IDs; display answer, filename/page evidence and citation identifiers. Handle no evidence, unsupported questions, malformed citations, retrieval failures and session expiry without inventing policy terms. | UI/API contract tests for evidence provenance, multi-topic questions, errors and abstention behavior; mock generation unless live Gemini use is explicitly approved. |
+| **5.5 — Preserve insurance-cost/risk dashboard** | Keep the trained scikit-learn insurance-cost prediction and existing advisory experience usable alongside policy intelligence, with clearly separated inputs, results and explanations. Avoid presenting ML estimates as policy coverage, premiums or underwriting decisions. | Existing ML regression tests and UI checks; no unintended coupling to policy sessions or RAG documents. |
+| **5.6 — Isolated end-to-end UI regression** | Exercise a minimal vertical slice first: login → select an existing authorized fictional policy → ask → backend-enforced retrieval → display answer/evidence. Expand to upload, multi-policy questions, logout, expiry and errors after the slice passes. Use isolated test PostgreSQL/ChromaDB and synthetic data. | Reproducible automated and targeted manual tests; record skips, mocks and untested paths separately. |
+| **5.7 — Phase closure** | Review security, accessibility/usability, API compatibility, configuration, test results, issue log and README/handbook; commit and push only verified files. | Documented acceptance decision and remaining Phase 6–8 risks; no unsupported production-readiness claim. |
+
+**Phase 5 sequencing:** Begin with **5.1**, then implement the smallest authenticated vertical slice. Expand incrementally only after verifying the preceding boundary. The exact UI transport and session-handling design remain decisions for 5.1, not assumptions already settled.
+
+### Phase 6 — End-to-end security and reliability
+
+| Step | Planned work | Verification / decision gate |
+| --- | --- | --- |
+| **6.1 — Threat model and trust boundaries** | Inventory assets, credentials, user/session boundaries, uploaded PDFs, model inputs, PostgreSQL/ChromaDB and external services. | Prioritized threat model with owners and test cases. |
+| **6.2 — Negative authentication and authorization** | Test revoked/expired tokens, refresh replay, cross-user/cross-session document access and forged document IDs across all endpoints and UI paths. | Automated negative matrix; no unauthorized policy retrieval or deletion in tested cases. |
+| **6.3 — Input, upload and prompt-injection defenses** | Review malformed/oversized PDFs, content limits, validation, hostile policy text, retrieval instructions embedded in documents and error disclosures. | Adversarial synthetic tests; policy text remains untrusted reference material. |
+| **6.4 — Concurrency, lifecycle and cleanup** | Test overlapping upload/query/delete/logout, expiration races, PostgreSQL advisory locks, cleanup retries and scheduler restart/multi-worker coordination. | Controlled race/failure tests; documented single-worker versus multi-worker limits. |
+| **6.5 — Cross-store consistency and recovery** | Simulate PostgreSQL/ChromaDB partial failures, incomplete indexing/deletion and retries; review migration and backup/restore behavior. | Recovery tests and reconciliation procedure; no silent claim of atomic cross-store transactions. |
+| **6.6 — Operational safeguards** | Review timeouts, bounded retries, rate limiting, secrets, least-privilege database roles, structured redacted logs, health checks and observability. | Verified safeguards and documented deployment-dependent gaps. |
+| **6.7 — Closure** | Consolidate security findings, regression evidence and issue-log updates. | Phase-specific acceptance review; independent audit remains a separate question. |
+
+### Phase 7 — Expanded RAG evaluation and performance
+
+| Step | Planned work | Verification / decision gate |
+| --- | --- | --- |
+| **7.1 — Versioned fictional benchmark** | Expand synthetic insurance policies/questions to include comparisons, exclusions, ambiguity, conflicts, missing terms and adversarial wording. | Reproducible dataset, labels and documented scope. |
+| **7.2 — Passage-level retrieval quality** | Evaluate relevance and coverage at the actual passage level, not only Phase 4.4.7 page-group proxies. | Report Precision/Recall/MRR or suitable metrics with explicit label definitions. |
+| **7.3 — Answer correctness and grounding** | Check whether answers faithfully reflect supplied policy evidence without inventing benefits or limits. | Case-level rubric and aggregate results, distinguishing human review from automated judgments. |
+| **7.4 — Citation faithfulness** | Validate that cited evidence IDs, filenames, pages and passages support the specific claims made. | Traceable citation audit and failure categories. |
+| **7.5 — Abstention and uncertainty** | Test missing, ambiguous and contradictory policy information; ensure unsupported answers are qualified or withheld. | Measured abstention behavior and documented limitations. |
+| **7.6 — Controlled performance and regressions** | Separate cold/warm vector search, reranking, context assembly, generation and end-to-end latency; evaluate resource use and context budgets against comparable baselines. | Repeated measurements with environment, sample size and methodology; no unmeasured speedup or token-saving claims. |
+| **7.7 — Evaluation report and closure** | Consolidate benchmark results, error analysis, thresholds, reproducibility instructions and outstanding risks. | Evidence-backed Phase 7 conclusion, not blanket model-accuracy claims. |
+
+### Phase 8 — CI/CD, staging and deployment
+
+| Step | Planned work | Verification / decision gate |
+| --- | --- | --- |
+| **8.1 — Deployment architecture review** | Select topology, hosting and persistence strategy for FastAPI, Gradio, PostgreSQL, ChromaDB and model dependencies; estimate costs and operational constraints. | Reviewed architecture and explicit hosting decision. |
+| **8.2 — Continuous integration** | Add GitHub Actions or equivalent checks for formatting/linting, unit/integration tests, dependency validation and build gates, using isolated services where needed. | Passing CI on a clean checkout; secrets never embedded in workflows. |
+| **8.3 — Configuration and secrets** | Separate development/test/staging settings; manage Gemini, JWT, database and cookie secrets securely. | Documented environment contract and no committed credentials. |
+| **8.4 — Data durability and migrations** | Plan persistent PostgreSQL/ChromaDB volumes, schema migrations, backups, restore tests and data-retention/deletion procedures. | Staging migration and recovery evidence. |
+| **8.5 — Staging deployment and smoke tests** | Deploy a nonproduction environment; verify authenticated UI, fictional PDF lifecycle, RAG evidence, ML dashboard and failure behavior. | Recorded staging smoke-test results; no real customer data by default. |
+| **8.6 — Monitoring and operations** | Add health checks, safe logs, metrics, alerts, runbooks, cleanup/scheduler ownership and rollback procedures. | Operational checks and ownership documented. |
+| **8.7 — Release review** | Reconcile security, privacy, performance, cost and recovery findings; decide whether any production launch is justified. | Explicit go/no-go decision. Local tests alone do not establish production readiness. |
+
+**Current next action:** Phase **5.1** architecture and API-contract review. Preserve the Phase 4.4.7C baseline and historical engineering record while implementing and verifying each subsequent step.
