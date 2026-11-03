@@ -1,5 +1,43 @@
 
-"""Persistent PDF management and evidence-grounded insurance RAG."""
+"""
+MODULE NAME
+-----------
+PERSISTENT INSURANCE POLICY DOCUMENT SERVICE
+
+PURPOSE
+-------
+Ingest, authorize, retrieve, compare, and answer questions from
+session-owned insurance-policy PDFs.
+
+ENVIRONMENT / CONFIGURATION
+---------------------------
+Uses existing PostgreSQL, ChromaDB, and optional Gemini configuration.
+Multi-document evidence is bounded by MULTI_MAX_CONTEXT_CHUNKS.
+
+DEPENDENCIES
+------------
+LangChain, database service, query planning, RAG service, vector store,
+document lifecycle locking, and RAG performance instrumentation.
+
+RESPONSIBILITIES / WHAT WE TEST
+-------------------------------
+1. Extract and index PDF passages.
+2. Detect duplicate indexed content within a session.
+3. Enforce document ownership, readiness, and expiry.
+4. Retrieve semantic candidates without full-document scans.
+5. Expand explicitly multi-topic questions with bounded searches.
+6. Rerank candidates using the existing local cross-encoder.
+7. Select bounded evidence without filling the context blindly.
+8. Construct and validate evidence citations.
+9. Preserve existing single- and multi-document answer interfaces.
+
+SECURITY NOTES
+--------------
+User and session identifiers must originate from verified authentication.
+Document content is untrusted reference material, not instructions.
+Session-operation locks protect retrieval against concurrent cleanup.
+Never log policy text, questions, credentials, or generated answers.
+"""
 
 import hashlib
 import logging
@@ -19,6 +57,7 @@ from services.database_service import (
     touch_document,
     update_document_status,
 )
+from services.query_planning import build_retrieval_plan
 from services.rag_metrics import (
     current_metrics,
     measure_stage,
@@ -38,30 +77,31 @@ from services.vector_store_service import (
     search_similar_documents,
 )
 
+
 logger = logging.getLogger(__name__)
 
 MULTI_CANDIDATES_PER_DOCUMENT = 6
+MULTI_TOPIC_CANDIDATES = 3
+
+# A focused comparison retains at most three passages per policy.
 MULTI_EVIDENCE_PER_DOCUMENT = 3
+
+# An expanded query may retain up to two passages per policy/topic.
+MULTI_EVIDENCE_PER_TOPIC = 2
+
+# This is a hard ceiling, not a target to fill.
 MULTI_MAX_CONTEXT_CHUNKS = 18
+
+MAX_MULTI_RETRIEVAL_CALLS = 20
 MAX_DOCUMENTS_PER_QUERY = 5
 
-# Broad questions about small PDFs benefit from complete evidence.
-BROAD_QUERY_PATTERN = re.compile(
-    r"\b(compare|comparison|differences|list all|all exclusions|"
-    r"all benefits|summari[sz]e|overview)\b",
-    re.IGNORECASE,
-)
-
-# Accepted citation formats: [E1] and [E1, E2].
 CITATION_GROUP_PATTERN = re.compile(
     r"\[(E\d+(?:\s*,\s*E\d+)*)\]"
 )
-
-# Finds bracketed references beginning with an evidence ID.
-# Used to catch malformed formats such as [E1–E4].
 EVIDENCE_REFERENCE_PATTERN = re.compile(
     r"\[\s*E\d+[^\]]*\]"
 )
+
 
 DOCUMENT_PROMPT = PromptTemplate.from_template(
     """You are an insurance policy document analysis assistant.
@@ -97,8 +137,12 @@ Question:
 )
 
 
+# =============================================================================
+# DOCUMENT IDENTIFIERS AND INPUT VALIDATION
+# =============================================================================
+
 def get_collection_name(document_id: str) -> str:
-    """Validate a UUID and derive its persistent collection name."""
+    """Validate a document UUID and derive its ChromaDB collection."""
     try:
         validated = uuid.UUID(hex=document_id)
     except (ValueError, TypeError, AttributeError) as error:
@@ -108,13 +152,17 @@ def get_collection_name(document_id: str) -> str:
 
 
 def _validate_question(question: str) -> None:
-    """Reject blank questions before retrieval or LLM invocation."""
+    """Reject blank questions before retrieval or generation."""
     if not isinstance(question, str) or not question.strip():
         raise ValueError("Question cannot be empty.")
 
 
+# =============================================================================
+# DUPLICATE-CONTENT DETECTION
+# =============================================================================
+
 def _content_signature(documents: list[Document]) -> str:
-    """Hash extracted PDF chunks to detect duplicate content."""
+    """Hash normalized extracted chunks to detect duplicate PDFs."""
     digest = hashlib.sha256()
 
     ordered = sorted(
@@ -138,7 +186,7 @@ def _content_signature(documents: list[Document]) -> str:
 
 
 def _stored_document_signature(collection_name: str) -> str:
-    """Reconstruct a document signature from ChromaDB."""
+    """Reconstruct a content signature from stored passages."""
     collection = get_persistent_client().get_collection(
         name=collection_name
     )
@@ -176,7 +224,7 @@ def _find_duplicate_document(
     user_id: str,
     session_id: str,
 ) -> dict | None:
-    """Find duplicate content within this authenticated session only."""
+    """Find identical content within the authenticated session."""
     incoming_signature = _content_signature(documents)
 
     for metadata in list_documents(user_id, session_id):
@@ -196,7 +244,7 @@ def _find_duplicate_document(
 def _unique_ready_documents(
     documents: list[dict],
 ) -> list[dict]:
-    """Remove duplicate document content from a query."""
+    """Exclude identical indexed PDFs from one comparison."""
     unique_documents: list[dict] = []
     seen_signatures: set[str] = set()
 
@@ -218,8 +266,12 @@ def _unique_ready_documents(
     return unique_documents
 
 
+# =============================================================================
+# EVIDENCE AND CITATION CONSTRUCTION
+# =============================================================================
+
 def _build_citations(documents: list[Document]) -> list[dict]:
-    """Create one traceable evidence record per retrieved passage."""
+    """Create traceable citations for selected passages."""
     citations: list[dict] = []
 
     for position, document in enumerate(documents, start=1):
@@ -246,7 +298,7 @@ def _build_citations(documents: list[Document]) -> list[dict]:
 
 
 def _format_evidence(citations: list[dict]) -> str:
-    """Format retrieved evidence for Gemini."""
+    """Format evidence with IDs and document provenance."""
     return "\n\n".join(
         f"[{item['citation_id']}]\n"
         f"Filename: {item['filename']}\n"
@@ -258,7 +310,7 @@ def _format_evidence(citations: list[dict]) -> str:
 
 
 def _response_text(response) -> str:
-    """Extract readable text from a Gemini response."""
+    """Extract readable text from a language-model response."""
     content = response.content
 
     if isinstance(content, str):
@@ -276,10 +328,9 @@ def _response_text(response) -> str:
 
 
 def _extract_cited_evidence_ids(answer: str) -> set[str]:
-    """Extract IDs from valid citations and reject malformed references."""
+    """Validate evidence citation syntax and return referenced IDs."""
     references: set[str] = set()
 
-    # First check every bracketed evidence reference.
     for match in EVIDENCE_REFERENCE_PATTERN.finditer(answer):
         citation = match.group(0)
 
@@ -293,7 +344,6 @@ def _extract_cited_evidence_ids(answer: str) -> set[str]:
                 "format. Please retry the question."
             )
 
-    # Extract IDs only after validating their format.
     for match in CITATION_GROUP_PATTERN.finditer(answer):
         references.update(
             part.strip()
@@ -302,6 +352,10 @@ def _extract_cited_evidence_ids(answer: str) -> set[str]:
 
     return references
 
+
+# =============================================================================
+# GROUNDED ANSWER GENERATION
+# =============================================================================
 
 def _generate_grounded_response(
     question: str,
@@ -381,9 +435,13 @@ def _generate_answer(
     question: str,
     documents: list[Document],
 ) -> str:
-    """Preserve the single-document string interface."""
+    """Preserve the existing single-document string interface."""
     return _generate_grounded_response(question, documents)["answer"]
 
+
+# =============================================================================
+# DOCUMENT INGESTION
+# =============================================================================
 
 def ingest_document(
     pdf_path: str,
@@ -403,7 +461,11 @@ def ingest_document(
     if not documents:
         raise ValueError("The PDF contains no indexable text.")
 
-    duplicate = _find_duplicate_document(documents, user_id, session_id)
+    duplicate = _find_duplicate_document(
+        documents,
+        user_id,
+        session_id,
+    )
 
     if duplicate is not None:
         raise ValueError(
@@ -432,7 +494,10 @@ def ingest_document(
         )
 
         update_document_status(
-            document_id, "ready", user_id, session_id
+            document_id,
+            "ready",
+            user_id,
+            session_id,
         )
 
     except Exception:
@@ -443,7 +508,10 @@ def ingest_document(
 
         try:
             update_document_status(
-                document_id, "failed", user_id, session_id
+                document_id,
+                "failed",
+                user_id,
+                session_id,
             )
         except Exception:
             logger.exception(
@@ -453,7 +521,6 @@ def ingest_document(
 
         try:
             client = get_persistent_client()
-
             existing_names = {
                 item.name
                 for item in client.list_collections()
@@ -479,18 +546,22 @@ def ingest_document(
     return document_id
 
 
+# =============================================================================
+# DOCUMENT METADATA AND DELETION
+# =============================================================================
+
 def get_document_metadata(
     document_id: str,
     user_id: str,
     session_id: str,
 ):
-    """Retrieve metadata only for the verified owner and session."""
+    """Retrieve metadata for the verified owner and session."""
     get_collection_name(document_id)
     return get_document(document_id, user_id, session_id)
 
 
 def list_indexed_documents(user_id: str, session_id: str):
-    """List only documents owned by the current login session."""
+    """List accessible documents belonging to the current session."""
     return list_documents(user_id, session_id)
 
 
@@ -499,8 +570,12 @@ def delete_indexed_document(
     user_id: str,
     session_id: str,
 ) -> bool:
-    """Delete a document's ChromaDB collection and database record."""
-    metadata = get_document_metadata(document_id, user_id, session_id)
+    """Delete the authorized collection before its SQL metadata."""
+    metadata = get_document_metadata(
+        document_id,
+        user_id,
+        session_id,
+    )
 
     if metadata is None:
         return False
@@ -518,16 +593,22 @@ def delete_indexed_document(
         client.delete_collection(name=collection_name)
 
     return delete_document_record(
-        document_id, user_id, session_id
+        document_id,
+        user_id,
+        session_id,
     )
 
+
+# =============================================================================
+# SEMANTIC CANDIDATE RETRIEVAL
+# =============================================================================
 
 def _retrieve_candidates(
     metadata: dict,
     question: str,
     candidate_k: int,
 ) -> list[Document]:
-    """Retrieve semantic candidates from one indexed document."""
+    """Retrieve semantic candidates from one authorized collection."""
     collection = get_persistent_client().get_collection(
         name=metadata["collection_name"]
     )
@@ -559,14 +640,16 @@ def retrieve_document_chunks(
     user_id: str,
     session_id: str,
 ) -> list[Document]:
-    """Retrieve and rerank passages from one ready PDF."""
+    """Retrieve and rerank evidence from one ready PDF."""
     _validate_question(question)
 
     if top_k < 1:
         raise ValueError("top_k must be at least 1.")
 
     metadata = get_document_metadata(
-        document_id, user_id, session_id
+        document_id,
+        user_id,
+        session_id,
     )
 
     if metadata is None:
@@ -575,7 +658,6 @@ def retrieve_document_chunks(
     if metadata["status"] != "ready":
         raise ValueError("Document is not ready for querying.")
 
-    # Refresh activity only for an authorized, unexpired document.
     if not touch_document(document_id, user_id, session_id):
         raise FileNotFoundError("Document not found.")
 
@@ -600,7 +682,7 @@ def answer_indexed_document_question(
     user_id: str,
     session_id: str,
 ) -> str:
-    """Answer a question using one indexed document."""
+    """Answer one PDF question using the existing string interface."""
     documents = retrieve_document_chunks(
         document_id=document_id,
         question=question,
@@ -611,12 +693,16 @@ def answer_indexed_document_question(
     return _generate_answer(question, documents)
 
 
+# =============================================================================
+# MULTI-DOCUMENT AUTHORIZATION AND EXPIRY
+# =============================================================================
+
 def _resolve_documents(
     document_ids: list[str] | None,
     user_id: str,
     session_id: str,
 ) -> list[dict]:
-    """Resolve ready documents and remove identical document content."""
+    """Resolve accessible ready PDFs and reject expired documents."""
     if document_ids is None:
         documents = [
             document
@@ -641,8 +727,11 @@ def _resolve_documents(
                 continue
 
             seen_ids.add(document_id)
+
             metadata = get_document(
-                document_id, user_id, session_id
+                document_id,
+                user_id,
+                session_id,
             )
 
             if metadata is None:
@@ -670,11 +759,11 @@ def _resolve_documents(
 
     resolved = _unique_ready_documents(documents)
 
-    # Refresh every selected document before ChromaDB retrieval.
-    # A failed refresh means the document expired or its session ended.
     for metadata in resolved:
         if not touch_document(
-            metadata["document_id"], user_id, session_id
+            metadata["document_id"],
+            user_id,
+            session_id,
         ):
             raise FileNotFoundError("Document not found.")
 
@@ -691,48 +780,116 @@ def _evidence_key(document: Document) -> tuple:
     )
 
 
-def _load_all_indexed_chunks(metadata: dict) -> list[Document]:
-    """Read every indexed passage for a small-document comprehensive query."""
-    collection = get_persistent_client().get_collection(
-        name=metadata["collection_name"]
-    )
+# =============================================================================
+# PHASE 4.4.7C - BOUNDED, TOPIC-AWARE MULTI-DOCUMENT RETRIEVAL
+# =============================================================================
 
-    # Broad questions retrieve all indexed passages instead of
-    # performing semantic search. Measure this separately.
-    with measure_stage("full_context_retrieval"):
-        stored = collection.get(
-            include=["documents", "metadatas"]
-        )
+def _ranked_candidates_for_target(
+    candidates: list[Document],
+    ranking_positions: dict[tuple, int],
+) -> list[Document]:
+    """
+    Order one policy/topic candidate set by global relevance.
 
-    texts = stored.get("documents") or []
-    metadatas = stored.get("metadatas") or []
-
-    if len(texts) != len(metadatas):
-        raise ValueError(
-            "Indexed document passages and metadata do not match."
-        )
-
-    result = []
-
-    for content, chunk_metadata in zip(texts, metadatas):
-        item_metadata = dict(chunk_metadata or {})
-        item_metadata["source"] = metadata["filename"]
-        item_metadata["document_id"] = metadata["document_id"]
-
-        result.append(
-            Document(
-                page_content=content,
-                metadata=item_metadata,
-            )
-        )
-
+    Candidates omitted by the reranker are excluded rather than
+    being assigned an invented relevance position.
+    """
     return sorted(
-        result,
-        key=lambda doc: (
-            int(doc.metadata.get("page", 0)),
-            int(doc.metadata.get("chunk_id", 0)),
+        (
+            document
+            for document in candidates
+            if _evidence_key(document) in ranking_positions
         ),
+        key=lambda document: ranking_positions[
+            _evidence_key(document)
+        ],
     )
+
+
+def _select_multi_document_evidence(
+    *,
+    metadata_list: list[dict],
+    queries: tuple[str, ...],
+    candidate_by_target: dict[
+        tuple[str, str], list[Document]
+    ],
+    globally_ranked: list[Document],
+) -> list[Document]:
+    """
+    Select a bounded number of passages per retrieval objective.
+
+    Focused questions:
+        Up to MULTI_EVIDENCE_PER_DOCUMENT per policy.
+
+    Expanded multi-topic questions:
+        Up to MULTI_EVIDENCE_PER_TOPIC per policy and explicit topic.
+
+    No general-purpose fill loop is used. The context cap remains a
+    hard maximum, not a requirement to include weak candidates.
+
+    Selection by retrieval origin does not prove topic relevance.
+    """
+    ranking_positions = {
+        _evidence_key(document): position
+        for position, document in enumerate(globally_ranked)
+    }
+
+    selected_by_key: dict[tuple, Document] = {}
+
+    if len(queries) == 1:
+        # Preserve the focused-question per-policy quota.
+        for metadata in metadata_list:
+            document_id = metadata["document_id"]
+
+            candidates = [
+                document
+                for document in globally_ranked
+                if document.metadata.get("document_id") == document_id
+            ]
+
+            for document in candidates[
+                :MULTI_EVIDENCE_PER_DOCUMENT
+            ]:
+                selected_by_key.setdefault(
+                    _evidence_key(document),
+                    document,
+                )
+
+    else:
+        # Every explicitly expanded topic is considered for each PDF.
+        # A passage appearing in multiple searches is counted once.
+        for metadata in metadata_list:
+            document_id = metadata["document_id"]
+
+            for topic_query in queries[1:]:
+                candidates = candidate_by_target.get(
+                    (document_id, topic_query),
+                    [],
+                )
+
+                ranked = _ranked_candidates_for_target(
+                    candidates,
+                    ranking_positions,
+                )
+
+                for document in ranked[
+                    :MULTI_EVIDENCE_PER_TOPIC
+                ]:
+                    selected_by_key.setdefault(
+                        _evidence_key(document),
+                        document,
+                    )
+
+    # Rank the selected set globally, then enforce the hard ceiling.
+    # Do not append additional passages merely to fill unused space.
+    selected = sorted(
+        selected_by_key.values(),
+        key=lambda document: ranking_positions[
+            _evidence_key(document)
+        ],
+    )
+
+    return selected[:MULTI_MAX_CONTEXT_CHUNKS]
 
 
 def retrieve_multi_document_chunks(
@@ -743,114 +900,95 @@ def retrieve_multi_document_chunks(
     session_id: str,
 ) -> tuple[list[Document], list[dict]]:
     """
-    Retrieve evidence across multiple PDFs.
+    Retrieve bounded evidence across authorized insurance PDFs.
 
-    For broad questions about small PDFs, include all indexed passages.
-    Otherwise, use semantic retrieval and cross-encoder reranking.
+    All questions use semantic retrieval and cross-encoder reranking.
+
+    Explicit multi-topic questions receive additional deterministic
+    searches. Retrieved passages are deduplicated before reranking.
+
+    The selection strategy limits context size without asserting that
+    every topic has been fully covered. Labeled evaluation is required
+    to establish actual relevance and coverage.
     """
     _validate_question(question)
+
+    # Authorization, readiness, expiry and activity refresh occur
+    # before any semantic search.
     metadata_list = _resolve_documents(
-        document_ids, user_id, session_id
+        document_ids,
+        user_id,
+        session_id,
     )
 
-    # Complete evidence for small-document broad comparisons.
-    if BROAD_QUERY_PATTERN.search(question):
-        complete_context: list[Document] = []
+    plan = build_retrieval_plan(question)
+    queries = plan.queries
 
-        for metadata in metadata_list:
-            complete_context.extend(
-                _load_all_indexed_chunks(metadata)
-            )
+    # Avoid unbounded retrieval work as policy count increases.
+    if (
+        len(queries) * len(metadata_list)
+        > MAX_MULTI_RETRIEVAL_CALLS
+    ):
+        queries = (plan.original_question,)
 
-        if (
-            complete_context
-            and len(complete_context) <= MULTI_MAX_CONTEXT_CHUNKS
-        ):
-            logger.info(
-                "Comprehensive multi-document context: %d passages",
-                len(complete_context),
-            )
-            metrics = current_metrics()
+    candidate_by_target: dict[
+        tuple[str, str], list[Document]
+    ] = {}
 
-            if metrics is not None:
-                metrics.candidate_chunks += len(complete_context)
-
-            return complete_context, metadata_list
-
-    # Existing semantic retrieval for other questions.
-    all_candidates: list[Document] = []
+    unique_candidates: dict[tuple, Document] = {}
 
     for metadata in metadata_list:
-        candidates = _retrieve_candidates(
-            metadata=metadata,
-            question=question,
-            candidate_k=MULTI_CANDIDATES_PER_DOCUMENT,
-        )
-        all_candidates.extend(candidates)
+        document_id = metadata["document_id"]
 
-    if not all_candidates:
+        for retrieval_query in queries:
+            candidate_k = (
+                MULTI_CANDIDATES_PER_DOCUMENT
+                if retrieval_query == plan.original_question
+                else MULTI_TOPIC_CANDIDATES
+            )
+
+            candidates = _retrieve_candidates(
+                metadata=metadata,
+                question=retrieval_query,
+                candidate_k=candidate_k,
+            )
+
+            candidate_by_target[
+                (document_id, retrieval_query)
+            ] = candidates
+
+            for document in candidates:
+                unique_candidates.setdefault(
+                    _evidence_key(document),
+                    document,
+                )
+
+    if not unique_candidates:
         return [], metadata_list
 
+    all_candidates = list(unique_candidates.values())
+
+    # One cross-encoder batch compares every candidate against the
+    # complete original question, preserving user intent.
     with measure_stage("reranking"):
         globally_ranked = rerank_documents(
-            question=question,
+            question=plan.original_question,
             documents=all_candidates,
             top_k=len(all_candidates),
         )
 
-    ranked_by_document: dict[str, list[Document]] = {
-        metadata["document_id"]: []
-        for metadata in metadata_list
-    }
-
-    for document in globally_ranked:
-        ranked_by_document[
-            document.metadata["document_id"]
-        ].append(document)
-
-    selected: list[Document] = []
-    selected_keys: set[tuple] = set()
-
-    quota = min(
-        MULTI_EVIDENCE_PER_DOCUMENT,
-        MULTI_MAX_CONTEXT_CHUNKS // len(metadata_list),
-    )
-
-    # Reserve evidence from each PDF.
-    for metadata in metadata_list:
-        document_id = metadata["document_id"]
-
-        for document in ranked_by_document[document_id][:quota]:
-            key = _evidence_key(document)
-
-            if key not in selected_keys:
-                selected.append(document)
-                selected_keys.add(key)
-
-    # Fill remaining space with the highest-ranked passages.
-    for document in globally_ranked:
-        if len(selected) >= MULTI_MAX_CONTEXT_CHUNKS:
-            break
-
-        key = _evidence_key(document)
-
-        if key not in selected_keys:
-            selected.append(document)
-            selected_keys.add(key)
-
-    positions = {
-        _evidence_key(document): index
-        for index, document in enumerate(globally_ranked)
-    }
-
-    selected.sort(
-        key=lambda document: positions[_evidence_key(document)]
+    selected = _select_multi_document_evidence(
+        metadata_list=metadata_list,
+        queries=queries,
+        candidate_by_target=candidate_by_target,
+        globally_ranked=globally_ranked,
     )
 
     logger.info(
-        "Multi-document retrieval: documents=%d, "
-        "candidates=%d, evidence=%d",
+        "Multi-document retrieval: documents=%d queries=%d "
+        "unique_candidates=%d evidence=%d",
         len(metadata_list),
+        len(queries),
         len(all_candidates),
         len(selected),
     )
@@ -865,7 +1003,7 @@ def answer_multi_document_question(
     user_id: str,
     session_id: str,
 ) -> dict:
-    """Answer across PDFs with traceable evidence."""
+    """Generate a grounded multi-policy answer with citations."""
     documents, metadata_list = retrieve_multi_document_chunks(
         question=question,
         document_ids=document_ids,
@@ -889,37 +1027,13 @@ def answer_multi_document_question(
 # =============================================================================
 # PHASE 4.4.6 - SESSION-COORDINATED DOCUMENT OPERATIONS
 # =============================================================================
-#
-# PURPOSE
-# -------
-# Protect all document operations from concurrent lifecycle cleanup.
-#
-# WHY SESSION-LEVEL LOCKING?
-# --------------------------
-# A single session may contain several PDFs. Ingestion performs
-# duplicate-content scans across the session, and multi-document
-# retrieval can access several collections.
-#
-# Using one advisory lock per login session keeps these operations
-# consistent without introducing complex multi-lock coordination.
-#
-# SECURITY NOTES
-# --------------
-# session_operation verifies the active login session after
-# acquiring the lock.
-#
-# The original functions still enforce document ownership and
-# expiry through get_document(), list_documents(), and
-# touch_document().
-#
-# The outer answer operation holds its lock through Gemini
-# generation, not just through ChromaDB retrieval.
-#
-# Do not remove these wrappers without replacing their
-# concurrency protection.
 
 from services.document_lifecycle import session_operation
 
+
+# Preserve existing advisory-lock and active-session verification.
+# The outer answer operation continues to hold its lock through
+# generation, not merely through retrieval.
 
 ingest_document = session_operation(ingest_document)
 
@@ -953,17 +1067,8 @@ answer_multi_document_question = session_operation(
 
 
 # =============================================================================
-# PHASE 4.4.7 - BASELINE RAG PERFORMANCE MEASUREMENT
+# PHASE 4.4.7 - REQUEST-LEVEL RAG PERFORMANCE MEASUREMENT
 # =============================================================================
-#
-# PURPOSE
-# -------
-# Record RAG performance without modifying retrieval or answer behavior.
-#
-# SECURITY NOTES
-# --------------
-# Preserve the existing Phase 4.4.6 session-operation wrappers.
-# Metrics contain numeric measurements, not policy text or credentials.
 
 _original_answer_indexed = answer_indexed_document_question
 _original_answer_multi = answer_multi_document_question
