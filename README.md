@@ -1,6 +1,6 @@
 # GenAI Health Risk & Cost Advisor — V3
 
-**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 4.4.7C retrieval improvement and verification (3 November 2026) · **Next:** Phase 5.1 authenticated Gradio/FastAPI architecture review
+**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 5.2.3B restricted HTTP security boundary (4 November 2026) · **Next:** Phase 5.2.4 backend authentication integration
 
 An insurance analytics and policy-document intelligence project combining an existing scikit-learn insurance-cost prediction workflow with a FastAPI-based, retrieval-augmented generation (RAG) backend. Users can authenticate, upload text-based **insurance policy PDFs**, and ask evidence-grounded questions about one or more policies.
 
@@ -621,4 +621,27 @@ The following sections describe **planned work, not implemented features**. Each
 | **8.6 — Monitoring and operations** | Add health checks, safe logs, metrics, alerts, runbooks, cleanup/scheduler ownership and rollback procedures. | Operational checks and ownership documented. |
 | **8.7 — Release review** | Reconcile security, privacy, performance, cost and recovery findings; decide whether any production launch is justified. | Explicit go/no-go decision. Local tests alone do not establish production readiness. |
 
-**Current next action:** Phase **5.1** architecture and API-contract review. Preserve the Phase 4.4.7C baseline and historical engineering record while implementing and verifying each subsequent step.
+**Current next action:** Phase **5.2.4** live backend authentication integration. Preserve the Phase 4.4.7C baseline and historical engineering record while implementing and verifying each subsequent step.
+
+
+---
+
+## Phase 5.2.3B — Restricted frontend HTTP boundary (4 November 2026)
+
+**Scope:** A separate FastAPI/Gradio ASGI frontend shell, not yet the interactive authenticated dashboard. The existing `app.py` remains a legacy development entry point and must not be exposed as the secured production frontend. The backend remains the authority for authentication, sessions and document access.
+
+**Implementation:** `frontend/api_client.py` handles backend HTTP requests; `frontend/session_manager.py` manages server-side credentials; `frontend/session_binding.py` manages opaque registry handles; `frontend/browser_session_binding.py` maps server-issued browser identities; `frontend/http_session.py` issues and reads HttpOnly browser cookies; `frontend/gradio_security.py` applies a fail-closed mounted-route allowlist; `frontend/server.py` mounts a non-interactive Gradio shell. The HTTP gate permits the shell and narrowly scoped public static resources (including `/ui/theme.css` and `/ui/static/fonts/` for bundled `.woff`/`.woff2` files), while denying event, queue, upload, file, reset, and other unapproved routes. A Gradio `session_hash` is **not** an authentication credential.
+
+**Local startup (no paid external services required):**
+
+```bash
+FRONTEND_COOKIE_SECURE=false python -m uvicorn frontend.server:app --host 127.0.0.1 --port 7860 --workers 1
+```
+
+Open **`http://127.0.0.1:7860/`**, **not** `/ui/` as the initial request. The root endpoint issues the anonymous browser cookie and redirects to `/ui/`. Direct access to `/ui/` without a registered cookie correctly returns `401` with `Browser session required.` The frontend Swagger UI is intentionally disabled; backend API docs are separate at `http://127.0.0.1:8000/docs` when the backend is running.
+
+**Final user-reported verification (4 November 2026):** HTTP security integration **37 passed**; frontend regression **80 passed** at the preceding checkpoint; complete project suite **377 passed, 35 skipped, 12 subtests passed**. The 35 skips are opt-in PostgreSQL integration tests, not passed checks. Browser verification confirmed the root-to-UI bootstrap and restricted Gradio shell. Direct `/ui/` access without a registered cookie returned `401` as designed. The bundled SourceSansPro font returned `200 OK` after the narrowly scoped allowlist correction. The HTTP tests verify the restrictive shell, **not** authenticated interactive Gradio event authorization.
+
+**Closure decision:** Phase 5.2.3B is complete **only for the restricted, non-interactive HTTP boundary**. Interactive Gradio session/queue/file ownership and authenticated dashboard workflows are pending; no production-readiness claim is made.
+
+**Deployment restrictions:** In-memory browser/session binding requires a single frontend worker; `FRONTEND_COOKIE_SECURE=false` is local HTTP only. Before enabling interactive Gradio operations, implement and adversarially test cookie/identity rotation, CSRF/origin checks, browser-to-Gradio session and queue-event ownership, file authorization, and backend-enforced access. Do not run live Gemini calls without explicit approval. See `docs/PHASE_5_ARCHITECTURE.md` for the phase boundaries and security acceptance criteria.
