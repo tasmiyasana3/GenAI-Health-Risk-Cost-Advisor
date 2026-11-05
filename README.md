@@ -1,6 +1,6 @@
 # GenAI Health Risk & Cost Advisor — V3
 
-**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 5.2.3B restricted HTTP security boundary (4 November 2026) · **Next:** Phase 5.2.4 backend authentication integration
+**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 5.2.4 backend-connected frontend HTTP authentication (5 November 2026; implementation and verification complete, documentation/commit pending) · **Next:** Phase 5.2.4 documentation and scoped Git closure, then Phase 5.2.5 authentication UI
 
 An insurance analytics and policy-document intelligence project combining an existing scikit-learn insurance-cost prediction workflow with a FastAPI-based, retrieval-augmented generation (RAG) backend. Users can authenticate, upload text-based **insurance policy PDFs**, and ask evidence-grounded questions about one or more policies.
 
@@ -17,6 +17,7 @@ An insurance analytics and policy-document intelligence project combining an exi
 | Authorization | Authenticated document endpoints enforce user and session ownership, including expiration checks. |
 | Temporary document lifecycle | 30-minute inactivity expiration; cleanup on logout; optional scheduled cleanup every 600 seconds; PostgreSQL advisory locks coordinate document operations and deletion. |
 | Backward compatibility | Pre-migration ownerless document records are preserved by cleanup but excluded from authenticated document access. |
+| Secured frontend HTTP boundary | Separate FastAPI/Gradio ASGI shell with opaque HttpOnly browser identity, server-side authentication credentials, trusted-Origin validation, backend-connected login/refresh/logout, browser identity rotation, and fail-closed Gradio routes. Interactive authentication UI is not yet enabled. |
 
 **Phase 4.4.6A verification summary (31 October 2026):** Phase 4.4.6A technical verification is complete: **6 focused document-cleanup integration tests passed**, **40 integration tests passed**, and **252 tests passed** in the database-enabled full regression run. Manual testing also verified independent logins for two users and two sessions for one user, with cross-user and cross-session document isolation. The earlier **184 passed / 29 skipped** Phase 4.4.6 result and **205 passed / 29 skipped** 30 October result are retained below as dated historical checkpoints, not the latest overall result. Full concurrency/load testing is still planned for Phase 6.
 
@@ -67,6 +68,15 @@ GenAI-Health-Risk-Cost-Advisor/
 │   ├── main.py
 │   ├── auth_routes.py
 │   └── auth_dependencies.py
+├── frontend/                    # Restricted Gradio/FastAPI frontend and authentication boundary
+│   ├── server.py                # Browser bootstrap, auth HTTP routes, mounted shell
+│   ├── auth_coordinator.py      # Login, identity rotation, refresh access, logout
+│   ├── auth_origin.py           # Trusted-Origin checks
+│   ├── api_client.py            # Backend HTTP authentication client
+│   ├── session_manager.py       # Server-side token lifecycle
+│   ├── browser_session_binding.py
+│   ├── http_session.py
+│   └── gradio_security.py       # Fail-closed route gate
 ├── services/                    # Application and RAG business logic
 │   ├── auth_service.py           # Authentication and related session services
 │   ├── document_service.py       # Policy ingestion and document operations
@@ -89,6 +99,7 @@ GenAI-Health-Risk-Cost-Advisor/
 │   ├── evaluation/               # Phase 4.4.7 synthetic evaluation questions
 │   └── ...                       # API, retrieval and experiment tests
 ├── scripts/
+│   ├── smoke_tests/              # Local frontend authentication/security/refresh checks
 │   ├── benchmark_rag.py          # RAG benchmark utility
 │   └── capture_phase447_retrieval.py # Offline retrieval evidence capture
 ├── docs/
@@ -242,7 +253,7 @@ python -m uvicorn api.main:app --reload
 API documentation: `http://127.0.0.1:8000/docs`
 Health endpoint: `http://127.0.0.1:8000/health`
 
-The existing `app.py` Gradio workflow remains separate; a fully authenticated Gradio-to-FastAPI interface is planned for Phase 5.
+The existing `app.py` Gradio workflow remains separate. Phase 5.2.4 has verified the secured frontend HTTP authentication boundary, but the interactive authentication UI and Gradio callback/resource authorization remain pending. For the secured local frontend, set `API_BASE_URL=http://127.0.0.1:8000`, `FRONTEND_ALLOWED_ORIGIN=http://127.0.0.1:7860`, and `FRONTEND_COOKIE_SECURE=false`, then run `python -m uvicorn frontend.server:app --host 127.0.0.1 --port 7860`. Visit `http://127.0.0.1:7860/` first to bootstrap an anonymous browser cookie.
 
 ## Quality and verification strategy
 
@@ -268,7 +279,7 @@ These checks establish local behavior for the tested paths, not comprehensive se
 
 ## Development progress and end-to-end roadmap
 
-**Current checkpoint (3 November 2026):** The local V3 backend has completed **Phase 4.4.7C**, including deterministic multi-topic retrieval, bounded evidence selection, offline before/after evaluation and regression verification. Earlier 29 October–2 November checkpoints are preserved below as historical evidence. **Phase 5.1 is next:** review authenticated Gradio/FastAPI architecture and API contracts. Phases **5–8** remain future work. This is a milestone status, **not** a claim that the overall product is production-ready or a percentage-complete estimate.
+**Current checkpoint (5 November 2026):** Phase 5.2.4 secured frontend HTTP authentication is implemented and verified locally; documentation and the scoped Git commit remain pending. Phase 5.2.5 interactive authentication UI is next. Earlier 29 October–4 November checkpoints are preserved below as historical evidence. Later Phase 5 work and Phases 6–8 remain future work. This is a milestone status, **not** a claim that the overall product is production-ready or a percentage-complete estimate.
 
 | Phase | Objective and planned deliverables | Status |
 | --- | --- | --- |
@@ -282,7 +293,7 @@ These checks establish local behavior for the tested paths, not comprehensive se
 | **4.4.6 — Temporary policy-document lifecycle** | Session-scoped document ownership; 30-minute inactivity expiry; logout and optional scheduled cleanup of PostgreSQL/ChromaDB; advisory locks; migration 007; unit/integration/API coverage. | **Complete — 184 passed, 29 skipped; live deletion checks passed** |
 | **4.4.6A — Multi-user and multi-session security verification** | Manual cross-user/cross-session API checks, isolated storage guards, cleanup and lock integration tests. | **Complete — 31 October 2026** |
 | **4.4.7 — Retrieval efficiency and evidence coverage** | Instrument request stages; evaluate 10 synthetic cases at K=6/K=16; implement deterministic multi-topic retrieval and bounded topic-aware evidence selection; compare frozen baseline and post-change results. | **4.4.7A–C complete — 3 November 2026; no Phase 4.4.7D** |
-| **5 — Authenticated user interface** | Integrate Gradio with the authenticated FastAPI backend: register/login/logout, refresh handling, policy upload/list/selection, multi-policy Q&A, citations, expiry-aware UX and error states. | **Planned** |
+| **5 — Authenticated user interface** | Phase 5.1 architecture, 5.2.1–5.2.3 restricted frontend foundations and 5.2.4 backend-connected HTTP authentication are complete; interactive auth UI, Gradio event/resource ownership and policy workflows remain. | **In progress — 5.2.4 verified locally** |
 | **6 — End-to-end reliability and security** | Validate full user journeys and failure recovery; concurrent user logins/sessions and overlapping upload/query/delete stress tests; multi-worker scheduler coordination; privacy/security review, negative authorization tests, robust error handling, structured logging/observability and operational safeguards. | **Planned** |
 | **7 — Systematic RAG evaluation and performance** | Broader synthetic insurance-policy benchmark; retrieval relevance/coverage, citation faithfulness, answer correctness, latency and resource measurements; compare approaches and document limitations. | **Planned** |
 | **8 — CI/CD and deployment** | Containerization as appropriate; GitHub Actions test/migration gates; durable database/vector storage; secret management; backup/restore; hosting-cost review; staging and remote smoke tests. | **Planned — deployment decisions not finalized** |
@@ -291,7 +302,7 @@ These checks establish local behavior for the tested paths, not comprehensive se
 
 **Implemented and locally verified:** insurance-cost prediction/advisory as an existing independent workflow; authenticated FastAPI insurance-policy ingestion and question answering; persistent semantic indexes; multi-policy citations; PostgreSQL-backed accounts/sessions; document isolation; inactivity expiry and deletion from both stores; Phase 4.4.7C deterministic multi-topic retrieval and bounded evidence selection. The latest reported Phase 4.4.7C full-suite checkpoint is **266 passed, 35 skipped, 12 subtests passed** (3 November 2026). Historical checkpoints include **252 passed** on 31 October and **184 passed, 29 skipped** for Phase 4.4.6. Skipped cases are not counted as passes.
 
-**Not yet completed:** an integrated authenticated Gradio frontend (Phase 5), comprehensive security/reliability validation (Phase 6), passage-level retrieval and answer/citation-quality evaluation (Phase 7), and CI/CD/deployment (Phase 8). A locally functioning API is not equivalent to a deployed or independently security-audited service.
+**Not yet completed:** an interactive authenticated Gradio frontend (remaining Phase 5), comprehensive security/reliability validation (Phase 6), passage-level retrieval and answer/citation-quality evaluation (Phase 7), and CI/CD/deployment (Phase 8). A locally functioning API is not equivalent to a deployed or independently security-audited service.
 
 ### Phase 4.4.7 development checkpoints
 
@@ -621,7 +632,7 @@ The following sections describe **planned work, not implemented features**. Each
 | **8.6 — Monitoring and operations** | Add health checks, safe logs, metrics, alerts, runbooks, cleanup/scheduler ownership and rollback procedures. | Operational checks and ownership documented. |
 | **8.7 — Release review** | Reconcile security, privacy, performance, cost and recovery findings; decide whether any production launch is justified. | Explicit go/no-go decision. Local tests alone do not establish production readiness. |
 
-**Current next action:** Phase **5.2.4** live backend authentication integration. Preserve the Phase 4.4.7C baseline and historical engineering record while implementing and verifying each subsequent step.
+**Current next action:** Reconcile Phase **5.2.4** documentation and engineering issue log, perform the pre-staging review, then stage and commit only verified scoped changes. Live refresh and restricted Gradio route checks have passed. Phase 5.2.5 adds the interactive authentication UI. Historical checkpoints remain unchanged.
 
 
 ---
@@ -645,3 +656,85 @@ Open **`http://127.0.0.1:7860/`**, **not** `/ui/` as the initial request. The ro
 **Closure decision:** Phase 5.2.3B is complete **only for the restricted, non-interactive HTTP boundary**. Interactive Gradio session/queue/file ownership and authenticated dashboard workflows are pending; no production-readiness claim is made.
 
 **Deployment restrictions:** In-memory browser/session binding requires a single frontend worker; `FRONTEND_COOKIE_SECURE=false` is local HTTP only. Before enabling interactive Gradio operations, implement and adversarially test cookie/identity rotation, CSRF/origin checks, browser-to-Gradio session and queue-event ownership, file authorization, and backend-enforced access. Do not run live Gemini calls without explicit approval. See `docs/PHASE_5_ARCHITECTURE.md` for the phase boundaries and security acceptance criteria.
+
+
+---
+
+## Phase 5.2.4 — Backend-connected frontend HTTP authentication (5 November 2026)
+
+**Status:** Implementation and technical verification complete on 5 November 2026. Documentation, issue-log reconciliation and scoped Git commit remain pending. This addendum updates the current state without overwriting earlier milestone records.
+
+### Implementation
+
+- `frontend/auth_coordinator.py`: coordinates backend login, server-side credential ownership, browser identity rotation, rollback on failed binding, logout and local cleanup. A concurrent-login test verifies the losing session is revoked.
+- `frontend/auth_origin.py`: exact trusted-Origin validation for authentication-changing HTTP requests. `FRONTEND_ALLOWED_ORIGIN` must be configured; missing or foreign origins fail closed.
+- `frontend/server.py`: `/frontend-auth/status`, `/frontend-auth/login`, `/frontend-auth/logout`; returns only non-sensitive status, rotates the opaque browser cookie on successful login, rejects invalid credentials with HTTP 401, maps backend availability failures to HTTP 503, and clears local browser access on attempted logout. Failed backend revocation is not reported as confirmed success.
+- `frontend/api_client.py`, `frontend/session_manager.py`, `frontend/browser_session_binding.py`, `frontend/http_session.py` and `frontend/gradio_security.py` retain their earlier responsibilities. JWT access and refresh credentials remain on the frontend Python server; the browser receives only the opaque HttpOnly cookie.
+- `scripts/smoke_tests/verify_frontend_auth.py`: reusable manual HTTP smoke test; prompts for disposable-account credentials without printing passwords or tokens. Requires running local frontend and backend; it is **not** an automatic pytest unit test.
+
+### Verification performed
+
+- B.3 focused coordinator, rollback, concurrent-login, origin and HTTP login security tests: **45 passed**.
+- Existing frontend HTTP security regression: **44 passed**.
+- B.4 logout/error classification tests: **13 passed**; combined frontend HTTP tests: **23 passed**.
+- Opt-in PostgreSQL-backed authentication contract tests: **22 passed**, against the guarded `health_rag_migration_test` database.
+- Database-enabled full regression: **470 passed, 12 subtests passed** (user-reported). Earlier default-skipped results remain historical, not failures.
+- Running backend `http://127.0.0.1:8000`: Swagger and `/health` available; root `/` returns 404 because no backend root route is defined.
+- Running secured frontend `http://127.0.0.1:7860/`: anonymous bootstrap redirects with HTTP 303 to `/ui/`, restricted shell renders, and `/frontend-auth/status` initially reports `false`.
+- Real local frontend → FastAPI → PostgreSQL smoke test: login HTTP 200; browser identity rotated; status changed to `true`; logout HTTP 200; final status `false`.
+- Reusable smoke script: **8/8 checks passed**, including two distinct anonymous browser identities, authenticated Browser A while Browser B remained unauthenticated, and logout/cookie invalidation.
+- One older test account returned HTTP 401; another disposable account authenticated successfully. The first account's credentials/database history were not investigated and should not be described as a product defect.
+
+### Remaining verification and security boundaries
+
+- **Live frontend-triggered refresh verified:** `python -m scripts.smoke_tests.verify_frontend_refresh` passed **7/7 checks** with a disposable account, including real backend login, refresh completion, returned access token, refresh-cookie rotation, authenticated status, logout and browser invalidation. The first run exposed an overly strict test assertion: the access JWT may be byte-identical when issued in the same second because the backend does not include a `jti`. The smoke test was corrected to verify a returned token and actual refresh-token rotation without changing backend token generation.
+- **Restricted Gradio security verified:** the dedicated smoke test passed **7/7 checks**, including intentional HTTP 403 denial of `/ui/static/js/iframeResizer.contentWindow.min.js`, queue, upload, file and event routes. The shell still renders. This is an accepted fail-closed restriction for the current non-interactive phase, not a reason to broadly allowlist `/ui/static/`. Reassess only if later authorized UI functionality requires this asset.
+- Gradio callbacks, queue/event ownership, uploads and file access remain blocked pending Phases 5.2.5–5.2.6. No complete authenticated dashboard is claimed.
+- Single-worker frontend is required by the in-memory browser/session registry. `FRONTEND_COOKIE_SECURE=false` is for local HTTP only. Production still needs HTTPS, appropriate CSRF/Origin policy, rate limiting, shared session storage if scaled, and further security review.
+- No paid external APIs were needed for these checks; no live Gemini calls should run without explicit approval.
+- **Final database-enabled regression:** `RUN_PHASE4_DB_TESTS=1 python -m pytest -q` reported **470 passed, 12 subtests passed in 15.42 s**. `python -m py_compile scripts/smoke_tests/verify_frontend_refresh.py` and `git diff --check` succeeded; Git exit codes were 0.
+- **No Phase 5.2.4 commit is recorded in this update.** Stage only phase-related files after documentation and issue-log review; leave `docs/research/` and local evaluation result JSON files untracked unless explicitly approved.
+
+### Local commands
+
+```bash
+# Terminal 1: backend
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2: secured frontend (local HTTP only)
+export API_BASE_URL=http://127.0.0.1:8000
+export FRONTEND_ALLOWED_ORIGIN=http://127.0.0.1:7860
+export FRONTEND_COOKIE_SECURE=false
+python -m uvicorn frontend.server:app --host 127.0.0.1 --port 7860
+
+# Terminal 3: interactive, disposable-account smoke test
+python -m scripts.smoke_tests.verify_frontend_auth
+python -m scripts.smoke_tests.verify_frontend_refresh
+
+# Guarded database regression; never point this at the working database
+RUN_PHASE4_DB_TESTS=1 python -m pytest -q
+
+git diff --check
+git status -sb
+```
+
+
+## Phase 5.2.4 final verification addendum — 5 November 2026
+
+**Technical acceptance:** COMPLETE for the local secured frontend HTTP authentication boundary; documentation and Git closure pending.
+
+| Verification | Observed result |
+| --- | --- |
+| Frontend-to-backend login, browser isolation and logout smoke test | **8/8 passed** |
+| Restricted Gradio security smoke test | **7/7 passed**; blocked static JS, queue, upload, file and event routes remain HTTP 403 |
+| Live frontend-triggered refresh smoke test | **7/7 passed**; real refresh-token rotation and logout verified |
+| Full guarded PostgreSQL regression | **470 passed, 12 subtests passed in 15.42 s** |
+| Refresh smoke-test syntax and Git whitespace check | **Passed**, exit codes 0 |
+
+The refresh smoke test initially assumed every new access JWT must differ from the prior token. `services/token_service.py` uses whole-second JWT timestamps and does not include `jti`; login and refresh in the same second may produce an identical access JWT. The test was corrected to validate the returned token and refresh-token rotation. No backend JWT changes were required. The refresh smoke test uses `python -m scripts.smoke_tests.verify_frontend_refresh` from the repository root.
+
+The secured Gradio shell is intentionally non-interactive: event, queue, upload, file and unapproved static routes remain blocked until ownership checks are implemented in later phases. The observed iframe-resizer JavaScript 403 is accepted as fail-closed for this milestone; it does not demonstrate a broken login.
+
+**Not included in Phase 5.2.4:** interactive login/registration controls, Gradio callback authorization, authenticated policy upload/Q&A UI, concurrent-load testing, production security audit or public deployment. No live Gemini requests were required for this verification.
+
+**Git closure:** Do not stage `docs/research/`, `tests/evaluation/phase447c_performance.local.json`, or `tests/evaluation/phase447c_retrieval_results.local.json` as part of this milestone. Review the engineering issue log and staged diff before committing.

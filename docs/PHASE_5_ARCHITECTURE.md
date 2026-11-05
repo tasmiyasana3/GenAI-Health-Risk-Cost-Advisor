@@ -3,75 +3,77 @@
 
 **Project:** GenAI Health Risk & Cost Advisor V3
 **Branch:** `version_3`
-**Frontend:** Gradio 6.30.0
+**Frontend:** Gradio 6.30.0 mounted in FastAPI
 **Backend:** FastAPI
-**Updated:** 4 November 2026
+**Updated:** 5 November 2026
 **Document status:** Living architecture and verification record
-**Current milestone:** Phase 5.2.3B completed
-**Next milestone:** Phase 5.2.4 — Backend authentication integration
+**Current milestone:** Phase 5.2.4 — Implementation and technical verification complete
+**Administrative closure:** Documentation, engineering issue log, pre-staging review and Git commit pending
+**Next milestone:** Phase 5.2.5 — Interactive authentication UI
 
 ---
 
-## 1. Purpose
+## 1. Purpose and scope
 
-Phase 5 connects the Gradio frontend to the authenticated
-FastAPI backend while preserving browser-session isolation,
-server-side credentials, and insurance-policy document
-authorization.
+Phase 5 connects the existing Gradio application to the authenticated FastAPI backend while preserving the security guarantees established during Phase 4.
 
-The target application supports:
+The intended application includes:
 
-- User registration, login, refresh, and logout.
-- Insurance cost prediction.
+- User registration, login, refresh and logout.
+- Insurance-cost prediction using the existing ML pipeline.
 - Health-risk and insurance-cost advisory.
 - Insurance-policy PDF upload and management.
-- Authenticated insurance-policy retrieval and RAG.
-- Server-side session and credential management.
+- Authenticated single-policy and multi-policy RAG.
+- Evidence-grounded answers with document and page references.
+- Server-side credential and browser-session management.
 
-The frontend must not bypass backend authorization.
+The backend remains authoritative for authentication, session validity, document ownership and authorization.
 
-Implementation and testing should prioritize local,
-free resources. Potentially chargeable API calls require
-explicit approval before execution.
+**Phase 5.2.4 delivers a secured frontend HTTP authentication boundary, not a complete interactive authenticated Gradio dashboard.**
 
-## 2. Architectural principles
+Development and testing prioritize free and local tools. Potentially chargeable services, including live Gemini requests, require explicit approval before use.
 
-1. Gradio handles presentation and user interaction.
-2. FastAPI remains the authentication and authorization authority.
-3. Authentication credentials remain on the Python server.
-4. Anonymous browser identity is distinct from authentication.
-5. Browser-provided identifiers are untrusted.
-6. Gradio session hashes are not authentication credentials.
-7. Registry handles are never exposed as browser credentials.
-8. Independent browsers must have isolated authentication state.
-9. Every protected resource requires authorization.
-10. Unknown or unverifiable ownership fails closed.
-11. Login rotates the browser identity.
-12. Logout clears local state and requests backend revocation.
-13. HTTP security requires adversarial tests.
-14. The initial frontend deployment uses one worker.
-15. Existing backend and ML/RAG services remain authoritative.
-16. Disabled endpoints must not be described as authorized endpoints.
-17. Passing local tests does not establish production readiness.
+## 2. Architecture principles
 
-## 3. Target architecture
+1. Keep presentation, authentication coordination and backend business logic separate.
+2. Keep JWT access tokens and refresh credentials on the Python server.
+3. Give browsers only an opaque HttpOnly session-identity cookie.
+4. Treat browser-provided identities and Gradio session hashes as untrusted.
+5. Keep credential managers isolated between independent browser sessions.
+6. Rotate browser identity after successful login.
+7. Revoke the backend session when possible during logout or failed login handoff.
+8. Clear local browser authentication even when backend logout fails.
+9. Never report unconfirmed backend revocation as successful.
+10. Validate the exact trusted Origin for authentication-changing requests.
+11. Deny unapproved Gradio event, queue, upload and file routes.
+12. Preserve the backend's independent JWT and PostgreSQL session checks.
+13. Preserve existing document user/session ownership and expiration rules.
+14. Use one frontend worker while session state remains in memory.
+15. Do not equate local verification with production security certification.
+
+## 3. Architecture and trust boundaries
 
 ```text
 Browser
   |
-  | HttpOnly browser identity cookie
+  | Opaque HttpOnly browser identity cookie
   v
-Frontend ASGI Server
+Frontend FastAPI ASGI Server
   |
-  +-- HTTP session validation
-  +-- Gradio route authorization
-  +-- Resource ownership verification
+  +-- Anonymous bootstrap
+  +-- Trusted-Origin guard
+  +-- Authentication HTTP routes
+  +-- Fail-closed Gradio route gate
+  +-- Restricted non-interactive Gradio shell
+  |
+  v
+FrontendAuthenticationCoordinator
   |
   v
 BrowserSessionBinding
   |
   v
-SessionRegistry
+Server-side session registry
   |
   v
 SessionCredentialManager
@@ -79,1006 +81,845 @@ SessionCredentialManager
   v
 FrontendAPIClient
   |
-  | Authenticated HTTP
+  | Backend HTTP requests
+  | Credentials retained server-side
   v
 FastAPI Backend
   |
-  +-- Registration / login / refresh / logout
-  +-- JWT and active-session validation
-  +-- PostgreSQL users and sessions
-  +-- Document ownership checks
+  +-- Registration, login, refresh, logout
+  +-- JWT validation
+  +-- PostgreSQL active-session checks
+  +-- Document user/session authorization
   +-- Insurance prediction and advisory
-  +-- Insurance-policy document services
+  +-- Policy PDF ingestion and management
   +-- Retrieval and RAG
          |
+         +-- PostgreSQL
          +-- ChromaDB
-         +-- Embeddings and reranking
-         +-- Gemini, when approved
+         +-- Embedding and reranking models
+         +-- Gemini, only with explicit approval
 ```
 
-This is the target architecture.
+### 3.1 Browser boundary
 
-Phase 5.2.3B implements the restricted frontend HTTP
-boundary, not the complete interactive architecture.
+The browser receives a session identity, not backend credentials. That identity is an opaque lookup value and must be validated against server-side state.
+
+### 3.2 Frontend boundary
+
+The frontend coordinates login, credential storage, refresh, logout and browser identity rotation. It does not independently grant document authorization.
+
+### 3.3 Backend boundary
+
+The backend verifies JWT claims and the associated active PostgreSQL session. Protected document operations additionally enforce user/session ownership and document expiration.
 
 ## 4. Component responsibilities
 
-### 4.1 Frontend API client
+### 4.1 `frontend/api_client.py`
 
-File: `frontend/api_client.py`
-
-Responsibilities:
-
-- Registration and login HTTP requests.
-- Refresh and logout requests.
-- HTTP timeouts and error handling.
-- Authentication response validation.
-- Backend refresh-cookie transport.
-- Explicit HTTP client lifecycle management.
-
-The API client transports requests but does not establish
-browser ownership or replace backend authorization.
-
-### 4.2 Credential manager
-
-File: `frontend/session_manager.py`
+Provides backend HTTP authentication transport.
 
 Responsibilities:
 
-- Hold access and refresh credentials server-side.
-- Track access-token expiration.
+- Send login, refresh and logout requests.
+- Preserve backend HTTP error classification.
+- Handle connection failures and timeouts.
+- Keep credentials out of browser responses.
+- Avoid a globally shared mutable authenticated identity.
+
+### 4.2 `frontend/session_manager.py`
+
+Maintains credentials for one authenticated frontend session.
+
+Responsibilities:
+
+- Retain access and refresh credentials server-side.
+- Supply access tokens for backend requests.
 - Refresh credentials when required.
-- Serialize concurrent refresh attempts.
-- Replace rotated credentials safely.
+- Coordinate refresh safely.
+- Clear invalid credentials.
 - Request backend logout.
-- Clear credentials on termination.
 
-The credential manager must not determine browser ownership.
+The manager does not determine document ownership.
 
-### 4.3 Session registry
+### 4.3 `frontend/session_binding.py`
 
-File: `frontend/session_binding.py`
+Provides server-side session registry and ownership support.
 
-Responsibilities:
+The current registry is process-local and in memory.
 
-- Create unpredictable internal registry handles.
-- Associate handles with credential managers.
-- Enforce idle expiration.
-- Synchronize registry operations.
-- Remove expired managers.
-- Clear local state during cleanup.
+Consequences:
 
-Registry handles are internal identifiers.
+- The secured frontend requires one worker.
+- Restarting the frontend loses its local session bindings.
+- Multi-worker deployment requires a reviewed shared-session design.
 
-The implementation is in-memory and single-process.
+### 4.4 `frontend/browser_session_binding.py`
 
-### 4.4 Browser session binding
-
-File: `frontend/browser_session_binding.py`
+Associates opaque browser identities with server-side session managers.
 
 Responsibilities:
 
 - Create anonymous browser identities.
-- Associate authenticated credential managers after login.
-- Rotate identities during authentication.
-- Resolve credentials for verified browser identities.
-- Track Gradio-session ownership.
-- Reject mismatched ownership.
-- Remove ownership on termination.
-- Clear local mappings on shutdown.
+- Resolve registered browser identities.
+- Bind authenticated managers.
+- Rotate identities after login.
+- Terminate browser bindings.
+- Prevent one browser from resolving another browser's credentials.
 
-Browser identities and Gradio session hashes have
-different responsibilities.
+### 4.5 `frontend/http_session.py`
 
-The existence of an ownership mapping alone does not
-prove the HTTP request legitimately owns a resource.
+Handles browser session cookies.
 
-### 4.5 HTTP session cookies
+Security requirements:
 
-File: `frontend/http_session.py`
+- HttpOnly cookie.
+- SameSite=Strict.
+- Secure cookie in HTTPS environments.
+- Validated registered browser identity.
+- Correct cookie deletion on logout.
+- Configured session lifetime.
 
-Responsibilities:
+`FRONTEND_COOKIE_SECURE=false` is restricted to local HTTP development.
 
-- Read browser-session cookies.
-- Reject unregistered identities.
-- Issue server-controlled cookies.
-- Clear cookies on termination.
-- Apply cookie security attributes and lifetime settings.
+### 4.6 `frontend/gradio_security.py`
 
-Cookie policy:
+Implements the mounted Gradio HTTP security gate.
 
-- HttpOnly: enabled.
-- SameSite: Strict.
-- Secure: enabled for HTTPS production.
-- Secure=false: local HTTP testing only.
-- Path: `/`.
-- Lifetime: bounded by configuration.
+The gate permits the restricted shell and narrowly approved public resources. It denies unapproved:
 
-An anonymous browser cookie is not a JWT.
+- Event execution.
+- Queue operations.
+- Upload operations.
+- File-serving routes.
+- Reset operations.
+- Static resources not explicitly permitted.
 
-A browser cookie is a bearer secret and must be
-protected with HTTPS and appropriate request safeguards.
+The gate must remain fail-closed until resource ownership checks exist.
 
-### 4.6 Gradio HTTP security gate
+A Gradio `session_hash` is not an authentication credential.
 
-File: `frontend/gradio_security.py`
+### 4.7 `frontend/auth_coordinator.py`
 
-The restricted implementation enforces an explicit
-allowlist around the mounted Gradio application.
+Introduced in Phase 5.2.4.
 
-Permitted with a registered browser identity:
+Coordinates:
 
-- GET/HEAD for `/ui` and `/ui/`.
-- GET/HEAD for `/ui/theme.css`.
-- GET/HEAD for the designated bundled `/ui/assets/` paths.
-- GET/HEAD for bundled `.woff` and `.woff2` resources
-  under `/ui/static/fonts/`.
+- Backend login.
+- Server-side credential-manager creation.
+- Browser identity rotation.
+- Rollback when login handoff fails.
+- Backend revocation attempts during rollback.
+- Authenticated-state lookup.
+- Access-token retrieval.
+- Logout and local session termination.
 
-Blocked:
+Concurrent-login tests cover winning and losing browser bindings, including revocation of the losing backend session.
 
-- Gradio event execution.
-- Queue submission.
-- Queue result streams.
-- Upload endpoints.
-- Private file retrieval.
-- Session heartbeat and reset routes.
-- Unknown mounted routes.
-- Unsafe HTTP methods.
+### 4.8 `frontend/auth_origin.py`
 
-The gate denies requests it cannot authorize.
+Introduced in Phase 5.2.4.
 
-The static-resource allowlist is deliberately narrower
-than allowing all `/ui/static/` paths.
+Enforces exact trusted-Origin validation on authentication-changing frontend HTTP requests.
 
-The public asset directories must still be reviewed
-before production deployment to ensure they cannot
-serve private or user-controlled content.
+Requirements:
 
-This module does not authorize interactive Gradio events.
+- Explicitly configured trusted frontend origin.
+- Rejection of missing or malformed origins.
+- Rejection of foreign origins.
+- No trust derived from unvalidated request headers.
 
-### 4.7 Frontend ASGI server
+Local configuration:
 
-File: `frontend/server.py`
+```bash
+FRONTEND_ALLOWED_ORIGIN=http://127.0.0.1:7860
+```
 
-Responsibilities:
+Origin validation protects the current authentication HTTP routes. Future interactive Gradio operations require their own complete authorization and CSRF review.
 
-- Initialize SessionRegistry.
-- Initialize BrowserSessionBinding.
-- Configure HTTP session cookies.
-- Apply Gradio HTTP security middleware.
-- Bootstrap anonymous browser sessions.
-- Mount the restricted Gradio shell.
-- Provide a minimal health endpoint.
+### 4.9 `frontend/server.py`
 
-The restricted server does not import the legacy
-prediction and RAG callbacks from `app.py`.
+Hosts the secured frontend ASGI application.
 
-This prevents the restricted public entry point
-from exposing those direct-service operations.
+Implemented responsibilities:
 
-### 4.8 Legacy Gradio application
+- Anonymous browser bootstrap.
+- Restricted Gradio shell mounting.
+- Authentication status.
+- Backend-connected login.
+- Backend-connected logout.
+- Origin enforcement.
+- Browser cookie issuance, rotation and deletion.
+- Fail-closed Gradio route restrictions.
 
-File: `app.py`
+Current HTTP routes:
 
-The existing Gradio application remains a development
-entry point.
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/` | Anonymous bootstrap and redirect |
+| GET | `/healthz` | Frontend health |
+| GET | `/frontend-auth/status` | Non-sensitive authentication status |
+| POST | `/frontend-auth/login` | Backend login and browser identity rotation |
+| POST | `/frontend-auth/logout` | Backend logout attempt and local cleanup |
+| GET | `/ui/` | Restricted non-interactive Gradio shell |
 
-It must not be treated as the secured production frontend.
+Login failure handling includes:
 
-Before public interactive deployment, protected callbacks
-must use authenticated backend HTTP operations and
-enforce browser/resource ownership.
+- HTTP 401 for rejected credentials.
+- HTTP 403 for rejected request origins.
+- HTTP 409 for an already authenticated browser.
+- HTTP 503 for unavailable backend authentication.
 
-### 4.9 FastAPI backend
+Sensitive credentials must not appear in browser responses.
 
-Relevant files include:
+### 4.10 Legacy `app.py`
 
-- `api/main.py`
-- `api/auth_routes.py`
-- Existing authentication dependencies.
-- Existing document authorization services.
+The original Gradio application remains separate from the secured frontend entry point.
 
-Responsibilities:
+Its existing prediction/advisory workflows must not bypass the new authorization boundary when integrated later.
 
-- Registration and password authentication.
+### 4.11 FastAPI backend
+
+Existing backend responsibilities remain unchanged:
+
+- Registration and password hashing.
 - JWT issuance and validation.
 - Refresh-token rotation.
-- Active-session verification.
-- Backend session revocation.
-- Protected document operations.
-- Document ownership enforcement.
-- Prediction and RAG API operations.
+- Session revocation.
+- PostgreSQL session persistence.
+- Protected policy-document endpoints.
+- Temporary document expiration and cleanup.
+- ML prediction, advisory and RAG services.
 
-Frontend authentication supplements but never replaces
-backend authorization.
+## 5. Security enforcement layers
 
-## 5. Three security enforcement layers
+### Layer 1 — Browser HTTP security
 
-### Layer 1 — Browser HTTP boundary
+**Status: Implemented and locally verified.**
 
-Files:
+Includes:
 
-- `frontend/http_session.py`
-- `frontend/gradio_security.py`
-- `frontend/server.py`
+- Opaque browser cookie.
+- Anonymous session bootstrap.
+- Server-side identity binding.
+- Identity rotation after login.
+- Trusted-Origin checks.
+- Local logout cleanup.
+- Restricted Gradio route allowlist.
 
-Implemented for the restricted shell:
+### Layer 2 — Gradio event and resource ownership
 
-- Server-issued anonymous browser identities.
-- Registered-cookie validation.
-- Missing-cookie rejection.
-- Forged-cookie rejection.
-- Read-only route allowlist.
-- Fail-closed blocking of unapproved Gradio operations.
+**Status: Pending Phases 5.2.5–5.2.6.**
 
-Pending for the interactive application:
+Required work:
 
-- HTTP login identity rotation.
-- Logout cookie invalidation.
-- Origin and CSRF protections for enabled mutations.
-- Production HTTPS and reverse-proxy verification.
+- Gradio session ownership.
+- Queue/event request ownership.
+- Callback authorization.
+- File and upload authorization.
+- Cross-browser isolation.
+- Session-hash impersonation resistance.
+- Authorization before protected event execution.
 
-### Layer 2 — Gradio resource ownership
-
-Files:
-
-- `frontend/browser_session_binding.py`
-- `frontend/gradio_security.py`
-- Future interactive resource-authorization integration.
-
-Required before enabling protected Gradio operations:
-
-- Verified browser-to-Gradio session ownership.
-- Queue-event ownership.
-- Stream-result ownership.
-- Upload and private-file ownership.
-- Cross-browser session isolation.
-- Expiration and cleanup.
-- Adversarial HTTP verification.
-
-Current status:
-
-Ownership primitives are unit-tested.
-
-Interactive resource routes remain blocked.
-
-A valid cookie must never authorize arbitrary
-session hashes, event identifiers, or files.
+Current Gradio event routes remain blocked.
 
 ### Layer 3 — Backend authorization
 
-Files:
+**Status: Implemented in Phase 4 and retained.**
 
-- Existing FastAPI authentication dependencies.
-- Existing backend authorization services.
-- `frontend/api_client.py`.
-- Future authenticated Gradio callbacks.
+Includes:
 
-Required controls:
-
-- Valid access token.
-- Valid active backend session.
-- Appropriate authenticated user.
-- Document and session ownership.
-- Document readiness and expiration.
-- Permission for the requested operation.
-
-The frontend must not bypass this layer.
+- JWT signature and claim validation.
+- PostgreSQL-backed active-session verification.
+- Refresh-token rotation and revocation.
+- User/session document ownership.
+- Temporary document expiration.
+- Backend-enforced authorization independent of frontend state.
 
 ## 6. Authentication lifecycle
 
-### 6.1 Anonymous browser bootstrap
+### 6.1 Anonymous bootstrap
 
-Expected sequence:
+1. Browser requests `/`.
+2. Frontend resolves or creates an anonymous browser identity.
+3. Frontend issues an opaque HttpOnly cookie.
+4. Browser receives an HTTP 303 redirect to `/ui/`.
+5. Restricted Gradio shell renders.
+6. Authentication status is `false`.
 
-```text
-GET /
-  |
-  +-- Check registered browser identity
-  +-- Create anonymous identity if missing
-  +-- Set HttpOnly cookie
-  |
-  v
-303 Redirect to /ui/
-  |
-  v
-GET /ui/ with cookie
-  |
-  v
-200 Restricted Gradio shell
+### 6.2 Registration
+
+Backend registration exists.
+
+Interactive frontend registration is pending Phase 5.2.5.
+
+### 6.3 Login
+
+1. Browser sends its registered anonymous cookie.
+2. Frontend validates the request Origin.
+3. Frontend forwards credentials to the backend.
+4. Backend authenticates and creates a PostgreSQL-backed session.
+5. Frontend credential manager retains backend credentials.
+6. Browser identity rotates.
+7. Frontend issues a replacement opaque cookie.
+8. Authentication status becomes `true`.
+
+Backend access and refresh tokens are not returned to the browser.
+
+### 6.4 Protected backend requests
+
+The future authenticated application workflow is:
+
+1. Browser sends its opaque cookie.
+2. Frontend resolves its server-side credential manager.
+3. Credential manager supplies or refreshes an access token.
+4. Frontend API client calls the backend.
+5. Backend validates JWT, session and resource ownership.
+6. Frontend displays only authorized results.
+
+Interactive Gradio callbacks are not enabled in Phase 5.2.4.
+
+### 6.5 Access-token refresh
+
+**Status: Implemented and live verified.**
+
+The frontend credential manager requests a new access token through the real FastAPI backend.
+
+The backend rotates the refresh credential.
+
+The Phase 5.2.4 live smoke test verified:
+
+- Real backend login.
+- Real backend refresh completion.
+- Returned access token.
+- Refresh-token rotation.
+- Continued authenticated frontend status.
+- Backend logout after refresh.
+- Browser-session invalidation.
+
+**Result: 7/7 checks passed.**
+
+#### JWT equality finding
+
+The first refresh smoke-test run failed on an assertion requiring:
+
+```python
+refreshed_access != original_access
 ```
 
-The correct initial browser URL is:
+Inspection of `services/token_service.py` established that the access JWT contains:
 
-`http://127.0.0.1:7860/`
+- `sub`
+- `sid`
+- `iat`
+- `exp`
+- `iss`
+- `token_type`
 
-Direct access to `/ui/` without a registered cookie
-must return HTTP 401.
+The JWT does not contain a unique `jti` claim.
 
-The anonymous session does not contain backend
-authentication credentials.
+JWT time claims are encoded at whole-second precision. Login and refresh within the same second can therefore produce byte-identical access JWTs.
 
-### 6.2 Registration — pending UI integration
+This is not evidence that refresh failed.
 
-1. User submits registration details.
-2. FrontendAPIClient calls FastAPI registration.
-3. Backend validates and creates the account.
-4. Frontend displays the result.
+The smoke test was corrected to require a returned access token and separately verify refresh-token rotation.
 
-Registration does not automatically imply login unless
-the backend contract explicitly provides that behavior.
-
-### 6.3 Login — pending UI integration
-
-1. User submits credentials.
-2. FrontendAPIClient calls FastAPI login.
-3. Backend authenticates the user.
-4. Frontend creates a SessionCredentialManager.
-5. BrowserSessionBinding rotates the browser identity.
-6. A replacement HttpOnly cookie is issued.
-7. Previous identity and ownership records are invalidated.
-8. Browser receives only non-secret UI status.
-
-Actual login UI integration belongs to Phase 5.2.5.
-
-### 6.4 Protected request — pending integration
-
-1. Validate browser identity.
-2. Verify resource ownership.
-3. Resolve the authenticated credential manager.
-4. Obtain or refresh the access token.
-5. Call FastAPI through FrontendAPIClient.
-6. Backend authenticates the request.
-7. Backend checks resource authorization.
-8. Return only authorized results.
-
-### 6.5 Refresh
-
-Refresh is managed server-side.
-
-Concurrent refresh attempts must be synchronized.
-
-Rotated credentials must replace previous credentials
-consistently.
-
-Failed refresh must invalidate local authentication.
+**Decision:** Do not modify the backend JWT contract merely to satisfy an unsupported access-token uniqueness assertion.
 
 ### 6.6 Logout
 
-Logout must:
+1. Browser sends its registered identity cookie.
+2. Frontend validates the request Origin.
+3. Coordinator attempts backend logout.
+4. Frontend terminates the local browser binding.
+5. Frontend clears the browser cookie.
+6. Authentication status becomes `false`.
 
-1. Resolve the verified browser session.
-2. Request backend revocation.
-3. Clear local credentials.
-4. Remove resource ownership.
-5. Expire the browser cookie.
-6. Reset the UI.
+Backend revocation uncertainty must not be reported as confirmed success.
 
-Local cleanup alone does not establish backend revocation.
+### 6.7 Expiration
 
-### 6.7 Expiration and cleanup
+Frontend browser-session expiration and backend policy-document inactivity expiration are separate mechanisms.
 
-Frontend registry expiration and cookie expiration
-must be coordinated.
+The backend independently enforces session validity and document ownership.
 
-Expired credentials must be cleared locally.
+## 7. Gradio security findings
 
-A frontend process restart clears in-memory state.
+### 7.1 Restricted shell
 
-Backend sessions may survive frontend restart until
-backend expiration or revocation.
+The secured Gradio shell renders without enabling authenticated application workflows.
 
-## 7. Gradio-specific security findings
+The shell's initialization placeholder is expected until the interactive UI is implemented.
 
-Inspected Gradio version: 6.30.0.
+### 7.2 Static JavaScript HTTP 403
 
-Relevant mechanisms include:
+The browser requested:
 
-- `gr.Request`
-- `gr.State`
-- Gradio session hashes.
-- Queue and event routes.
-- StateHolder.
-- Heartbeat and unload behavior.
-- File-serving routes.
-
-Gradio uses session identifiers for UI state.
-
-A session hash is not an authentication credential.
-
-Different Gradio endpoints have different request
-and authorization paths.
-
-Callback-level authentication alone cannot establish
-ownership of queue streams, uploaded files, or every
-session-related resource.
-
-Therefore:
-
-- Never resolve JWTs using session_hash alone.
-- Never expose registry handles to the browser.
-- Never treat first-claim-wins ownership as sufficient proof.
-- Validate ownership at the relevant HTTP boundary.
-- Keep unverifiable endpoints disabled.
-- Test cross-browser access before enabling them.
-
-## 8. HTTP routing and deployment
-
-### 8.1 Restricted frontend routes
-
-| Request | Expected behavior |
-|---|---|
-| GET `/` | Bootstrap and redirect |
-| GET `/ui/` with valid cookie | Restricted shell |
-| GET `/ui/` without valid cookie | 401 |
-| GET `/ui/theme.css` with valid cookie | Allowed through gate |
-| GET bundled `/ui/assets/...` | Allowed through gate |
-| GET bundled `.woff2` under `/ui/static/fonts/` | Allowed through gate |
-| POST Gradio queue/join | 403 |
-| GET Gradio queue/data | 403 |
-| POST Gradio run/call | 403 |
-| Gradio upload route | 403 |
-| Gradio private-file route | 403 |
-| Unknown mounted route | 403 |
-| Unsafe shell HTTP method | 403 |
-| GET `/healthz` | 200 |
-
-An allowed request may still receive a response from
-Gradio indicating that the resource does not exist.
-
-Allowing a request through the gate does not guarantee
-the resource exists or is appropriate for public exposure.
-
-### 8.2 Local development
-
-Run:
-
-```bash
-FRONTEND_COOKIE_SECURE=false \
-python -m uvicorn frontend.server:app \
-  --host 127.0.0.1 \
-  --port 7860 \
-  --workers 1
+```text
+/ui/static/js/iframeResizer.contentWindow.min.js
 ```
 
-Open:
+The security gate returned HTTP 403.
 
-`http://127.0.0.1:7860/`
+The shell continued to render.
 
-Do not use `/ui/` as the initial URL in a fresh session.
+The dedicated Gradio security smoke test subsequently verified this denial alongside denial of queue, upload, file and event routes.
 
-The frontend intentionally disables Swagger documentation.
+**Decision:** Accept this as a fail-closed restriction for the current non-interactive milestone.
 
-Backend Swagger documentation is separate and available
-at `http://127.0.0.1:8000/docs` when the backend is running.
+Do not broadly allowlist `/ui/static/`.
 
-### 8.3 Production requirements
+Reassess the specific resource only if a later authorized UI workflow requires it, with a narrow allowlist and regression test.
 
-Production HTTPS deployment requires:
+### 7.3 Verified restricted-route checks
 
-- Secure cookies.
-- Trusted HTTPS termination.
-- Correct proxy-header configuration.
-- Explicit trusted hosts and origins.
-- Request-origin and CSRF protection.
-- Appropriate security headers.
-- Request and upload size limits.
-- Rate limiting where appropriate.
-- Secret management.
-- Redacted application logs.
-- Session cleanup and expiration verification.
-- No direct public exposure of legacy app.py.
-- A single frontend worker under the current registry design.
+**Result: 7/7 passed.**
 
-Multi-worker or multi-replica deployment requires
-a separately reviewed shared-session architecture.
+Checks included:
 
-The restricted frontend is not yet a production-ready
-authenticated dashboard.
+- Anonymous bootstrap.
+- Restricted shell access.
+- Static JavaScript denial.
+- Queue denial.
+- Upload denial.
+- File-serving denial.
+- Event-execution denial.
 
-## 9. Testing strategy
+These checks establish the tested restrictions, not comprehensive Gradio callback security.
+
+## 8. Local development
+
+### 8.1 Backend
+
+Run in Terminal 1:
+
+```bash
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Expected:
+
+- FastAPI starts on port 8000.
+- `/health` returns `{"status":"ok"}`.
+- Swagger is available at `http://127.0.0.1:8000/docs`.
+
+The backend root `/` is not defined; HTTP 404 there is expected.
+
+### 8.2 Secured frontend
+
+Run in Terminal 2:
+
+```bash
+export API_BASE_URL=http://127.0.0.1:8000
+export FRONTEND_ALLOWED_ORIGIN=http://127.0.0.1:7860
+export FRONTEND_COOKIE_SECURE=false
+
+python -m uvicorn frontend.server:app --host 127.0.0.1 --port 7860
+```
+
+Expected:
+
+- Frontend starts on port 7860.
+- Opening `http://127.0.0.1:7860/` bootstraps a browser identity.
+- Browser redirects to `/ui/`.
+- Restricted shell renders.
+
+Use the root URL for initial navigation, not direct `/ui/` access without a cookie.
+
+### 8.3 Environment boundaries
+
+- Local HTTP only for insecure development cookies.
+- Single frontend worker.
+- In-memory frontend sessions.
+- Synthetic insurance documents.
+- Disposable authentication accounts.
+- Isolated PostgreSQL test database for destructive integration tests.
+- No paid Gemini calls without approval.
+
+## 9. Testing and verification
 
 ### 9.1 Offline unit tests
 
-Verify:
+Coverage includes:
 
-- Frontend HTTP client behavior.
-- Credential management.
-- Refresh synchronization.
-- Session registry lifecycle.
-- Anonymous browser creation.
-- Identity rotation.
-- Gradio ownership primitives.
-- Cookie issuance and deletion.
-- Error handling.
+- Frontend API client.
+- Credential manager.
+- Session registry and binding.
+- Browser identity rotation.
+- Authentication coordinator.
+- Login rollback.
+- Concurrent login.
+- Origin validation.
+- Logout failure classification.
 
-No database or Gemini is required.
-
-### 9.2 HTTP security integration tests
-
-File:
-
-`tests/integration_tests/test_gradio_security.py`
+### 9.2 HTTP integration tests
 
 Coverage includes:
 
-- Anonymous cookie issuance.
-- HttpOnly and SameSite attributes.
-- Cookie reuse.
-- Missing-cookie rejection.
-- Forged-cookie rejection.
-- Restricted shell accessibility.
-- Theme stylesheet accessibility.
-- Bundled font accessibility.
-- Blocking of other static resources.
-- Blocking of queue and event routes.
-- Blocking of upload and file routes.
-- Blocking of unknown paths.
-- Blocking of unsafe methods.
-- Independent browser cookie creation.
-- Defensive asset-path validation.
-
-These tests verify the restricted HTTP boundary.
-
-They do not prove authorization of enabled interactive
-Gradio operations.
-
-### 9.3 Backend integration tests
-
-Required for Phase 5.2.4:
-
-- Registration.
-- Login.
-- Refresh rotation.
-- Logout and revocation.
-- Expired and invalid credentials.
-- Protected endpoint authentication.
-- Document ownership.
-
-Use disposable accounts and isolated test storage.
-
-### 9.4 Browser end-to-end tests
-
-Required before enabling interactive functionality:
-
-- Registration and login UI.
-- Authentication persistence.
-- Identity rotation.
-- Logout.
+- Anonymous bootstrap.
+- Cookie issuance and rotation.
+- Login success and failure.
 - Browser isolation.
-- Gradio session ownership.
-- Queue-event ownership.
-- Stream-result ownership.
-- File and upload ownership.
-- Session expiration.
-- UI error recovery.
+- Token confidentiality.
+- Origin rejection.
+- Logout and backend failures.
+- Cookie invalidation.
+- Restricted Gradio routes.
 
-### 9.5 RAG and Gemini testing
+### 9.3 PostgreSQL integration tests
 
-Verify retrieval locally where possible.
+The guarded test database is:
 
-Live Gemini testing requires explicit approval.
+```text
+health_rag_migration_test
+```
 
-Record the model, cost/quota considerations,
-requests, and results when such tests are authorized.
+The database-enabled regression command is:
 
-## 10. Implementation roadmap
+```bash
+RUN_PHASE4_DB_TESTS=1 python -m pytest -q
+```
 
-### Phase 5.1 — Architecture
+Do not disable the test-database guard or point destructive tests at the working application database.
 
-Initial architecture and API-contract review.
+### 9.4 Live authentication smoke test
 
-Status: Completed as a design milestone.
+Script:
 
-### Phase 5.2.1 — Frontend API client
+```text
+scripts/smoke_tests/verify_frontend_auth.py
+```
 
-Files:
+Result:
 
-- `frontend/api_client.py`
-- `tests/unit_tests/test_frontend_api_client.py`
-
-Status: Complete and unit-tested.
-
-Historical checkpoint: 17 tests passed.
-
-### Phase 5.2.2 — Credential manager
-
-Files:
-
-- `frontend/session_manager.py`
-- `tests/unit_tests/test_frontend_session_manager.py`
-
-Status: Complete and unit-tested.
-
-Historical checkpoint: 15 tests passed.
-
-### Phase 5.2.3A — Session registry
-
-Files:
-
-- `frontend/session_binding.py`
-- `tests/unit_tests/test_frontend_session_binding.py`
-
-Status: Complete and unit-tested.
-
-### Phase 5.2.3B — Restricted HTTP security boundary
-
-Files:
-
-- `frontend/browser_session_binding.py`
-- `frontend/http_session.py`
-- `frontend/gradio_security.py`
-- `frontend/server.py`
-- `tests/unit_tests/test_browser_session_binding.py`
-- `tests/unit_tests/test_http_session.py`
-- `tests/integration_tests/test_gradio_security.py`
-
-Status: COMPLETE for the restricted HTTP boundary.
+**8/8 passed.**
 
 Verified:
 
-- Browser identity and cookie utilities.
-- Anonymous cookie bootstrap.
-- Missing/forged cookie rejection.
-- Restricted ASGI frontend.
-- Fail-closed Gradio route policy.
-- Public stylesheet allowlist.
-- Bundled font allowlist.
-- Adversarial route-denial tests.
-- Existing frontend regression.
-- Complete project regression.
-- Manual browser shell rendering.
-
-Not included:
-
-- Interactive login UI.
-- Authorized Gradio event execution.
-- Queue and stream resource ownership.
-- Authenticated prediction/RAG callbacks.
-- Production deployment certification.
-
-### Phase 5.2.4 — Backend authentication integration
-
-Status: Pending.
-
-Verify actual FastAPI registration, login, refresh,
-logout, and protected HTTP behavior through the
-frontend API client.
-
-### Phase 5.2.5 — Authentication UI
-
-Status: Pending.
-
-Implement:
-
-- Registration.
-- Login.
-- Logout.
+- Anonymous bootstrap.
+- Independent browser identities.
+- Real frontend-to-backend login.
 - Browser identity rotation.
-- Credential-manager attachment.
-- Authenticated callback integration.
-- Request-origin and CSRF safeguards.
+- Browser B remains unauthenticated.
+- Real backend logout.
+- Cookie invalidation.
+- Browser isolation after logout.
 
-Do not enable interactive routes without the necessary
-resource authorization.
+### 9.5 Live refresh smoke test
 
-### Phase 5.2.6 — Browser and session isolation
+Script:
 
-Status: Pending.
+```text
+scripts/smoke_tests/verify_frontend_refresh.py
+```
 
-Verify adversarial cross-browser access to:
+Run from the repository root as a module:
 
-- Session hashes.
-- Queue event identifiers.
-- Streamed results.
-- Uploaded files.
-- Document identifiers.
-- Expired and logged-out sessions.
+```bash
+python -m scripts.smoke_tests.verify_frontend_refresh
+```
 
-### Phase 5.3 — Authenticated application workflows
+Result:
 
-Status: Planned.
+**7/7 passed.**
 
-Migrate direct-service callbacks to authenticated
-FrontendAPIClient operations.
+The script uses a disposable account and the running local backend.
 
-Implement authenticated:
+It is a manual smoke test, not an automatically collected pytest test.
 
-- Insurance prediction.
-- Advisory generation.
-- Policy PDF upload.
-- Document listing and deletion.
-- Policy selection.
-- Evidence-grounded RAG Q&A.
-- Citation display.
-- Error and expiration handling.
+### 9.6 Gradio security smoke test
+
+Script:
+
+```text
+scripts/smoke_tests/verify_gradio_security.py
+```
+
+Result:
+
+**7/7 passed.**
+
+The expected HTTP 403 responses confirm that unapproved Gradio routes remain blocked.
+
+### 9.7 Full regression
+
+Final reported command:
+
+```bash
+RUN_PHASE4_DB_TESTS=1 python -m pytest -q
+```
+
+Final result on 5 November 2026:
+
+```text
+470 passed, 12 subtests passed in 15.42s
+```
+
+Additional checks:
+
+- Refresh smoke-test Python compilation: passed.
+- `git diff --check`: passed.
+- Pytest exit code: 0.
+- Git whitespace-check exit code: 0.
+
+No regression failure was reported.
+
+### 9.8 Verification interpretation
+
+The tests establish the behavior of the covered local implementation.
+
+They do not establish:
+
+- Production security certification.
+- Multi-worker correctness.
+- Complete concurrency/load resilience.
+- Interactive Gradio callback authorization.
+- RAG answer accuracy or citation faithfulness.
+- Public deployment readiness.
+
+No live Gemini requests were required for the Phase 5.2.4 verification.
+
+## 10. Phase 5 implementation roadmap
+
+### 5.1 — Architecture and API review
+
+**Complete.**
+
+Reviewed the frontend/backend boundary and selected backend HTTP authentication with server-side credential ownership.
+
+### 5.2.1 — Frontend API client
+
+**Complete.**
+
+Implemented backend HTTP authentication transport.
+
+### 5.2.2 — Credential manager
+
+**Complete.**
+
+Implemented server-side access/refresh credential lifecycle.
+
+### 5.2.3A — Session registry and binding
+
+**Complete.**
+
+Implemented server-side ownership and browser-binding foundations.
+
+### 5.2.3B — Restricted frontend HTTP boundary
+
+**Complete — 4 November 2026.**
+
+Implemented anonymous bootstrap, opaque browser cookie, restricted Gradio shell and fail-closed route gate.
+
+Historical verification:
+
+- 37 HTTP security integration tests passed.
+- 80 frontend regression tests passed.
+- Full suite: 377 passed, 35 skipped, 12 subtests passed.
+
+These are historical checkpoints, not the current full-suite totals.
+
+### 5.2.4 — Backend-connected frontend authentication
+
+**Implementation and technical verification complete — 5 November 2026.**
+
+Delivered:
+
+- Authentication coordinator.
+- Trusted-Origin guard.
+- Backend-connected HTTP login.
+- Non-sensitive authentication status.
+- Backend-connected HTTP logout.
+- Server-side credential ownership.
+- Browser identity rotation.
+- Login rollback and concurrency handling.
+- Backend error classification.
+- Local logout cleanup.
+- Live authentication smoke test.
+- Live refresh smoke test.
+- Restricted Gradio security verification.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| Focused coordinator/security tests | 45 passed |
+| Existing frontend security tests | 44 passed |
+| Logout/error tests | 13 passed |
+| Combined frontend HTTP tests | 23 passed |
+| Guarded PostgreSQL authentication contract | 22 passed |
+| Live authentication smoke | 8/8 passed |
+| Restricted Gradio security smoke | 7/7 passed |
+| Live refresh smoke | 7/7 passed |
+| Database-enabled full regression | 470 passed, 12 subtests passed |
+| Syntax and Git whitespace | Passed |
+
+**Remaining administrative work:** Update the engineering issue log, review documentation, inspect Git changes, stage scoped files and commit.
+
+### 5.2.5 — Interactive authentication UI
+
+**Pending.**
+
+Planned:
+
+- Registration form.
+- Login form.
+- Logout controls.
+- Authentication status display.
+- Safe error presentation.
+- Session-expiration UX.
+
+No backend tokens may be exposed to browser-side Gradio state.
+
+### 5.2.6 — Gradio event/resource ownership
+
+**Pending.**
+
+Planned:
+
+- Callback authorization.
+- Queue ownership.
+- Event ownership.
+- Upload and file authorization.
+- Cross-browser adversarial testing.
+- Session-hash impersonation resistance.
+
+### 5.3 — Authenticated application workflows
+
+**Pending.**
+
+Integrate:
+
+- Insurance-cost prediction.
+- Health-risk and cost advisory.
+- Insurance-policy upload and management.
+- Policy selection and retrieval.
+- Evidence-grounded single/multi-policy Q&A.
+- Document expiration and error states.
 
 ### Later phases
 
-Phase 5.4–5.7:
+- **Phase 6:** End-to-end security, concurrency, reliability and recovery.
+- **Phase 7:** Expanded retrieval, answer and citation evaluation.
+- **Phase 8:** CI/CD, deployment, monitoring and release review.
 
-Complete the remaining frontend integration,
-end-to-end verification, issue review, and phase closure.
+## 11. Risk register
 
-Phase 6:
+| Risk | Decision | Status |
+| --- | --- | --- |
+| Gradio session-hash impersonation | Require server-side ownership | Interactive enforcement pending |
+| In-memory session registry | One local frontend worker | Shared storage needed before scaling |
+| Backend logout failure | Clear local access; report uncertainty | Tested |
+| Refresh concurrency | Coordinate refresh and preserve rotation | Unit coverage and live refresh verified |
+| Browser-visible JWT leakage | Keep credentials server-side | HTTP confidentiality tested |
+| Gradio event/queue/file exposure | Deny until authorized | Restricted routes verified |
+| Cookie/session expiration mismatch | Fail closed and clear invalid state | Further lifecycle UX pending |
+| Session fixation | Rotate identity on login | Verified |
+| Misconfigured cookies/Origin/proxy | Explicit configuration and deployment review | Local configuration verified |
+| Static-resource exposure | Narrow allowlists only | Fail-closed iframe-resizer 403 accepted |
+| Login abuse | Add rate limiting before public deployment | Deferred |
+| Paid model calls | Require explicit approval | No Gemini calls needed for this phase |
+| Public security and privacy | Separate predeployment review | Pending |
 
-Security, concurrency, reliability, recovery,
-and operational verification.
+## 12. Engineering findings
 
-Phase 7:
+### Finding A — Python smoke-test import path
 
-Expanded retrieval, answer-quality, citation,
-abstention, and performance evaluation.
+Initial direct execution:
 
-Phase 8:
+```bash
+python scripts/smoke_tests/verify_frontend_refresh.py
+```
 
-CI/CD, staging, deployment, monitoring,
-and release-readiness review.
+failed to import the top-level `frontend` package.
 
-## 11. Known risks and decisions
+Running the script from the project root using:
 
-### R1 — Session-hash impersonation
+```bash
+python -m scripts.smoke_tests.verify_frontend_refresh
+```
 
-Risk: A supplied session hash could be mistaken for
-authentication or ownership.
+resolved the import-path issue.
 
-Decision: Never trust session_hash alone.
+Classification: Local test invocation issue, not an application authentication defect.
 
-Status: Interactive HTTP authorization pending.
+### Finding B — Access JWT equality assertion
 
-### R2 — In-memory registry
+The first live refresh smoke test completed login and backend refresh, then failed because it required a different access JWT string.
 
-Risk: Sessions are lost on restart and are not shared
-between workers.
+Root cause: The backend JWT contract does not guarantee a unique token string for two issuances within the same second.
 
-Decision: Single-process deployment initially.
+Resolution: Corrected the smoke-test assertion; retained verification of refresh-token rotation.
 
-Status: Accepted deployment restriction.
+Classification: Test assumption defect, not demonstrated backend refresh failure.
 
-### R3 — Backend revocation
+### Finding C — Gradio iframe-resizer HTTP 403
 
-Risk: Local cleanup does not revoke backend sessions.
+The restricted shell requested a static JavaScript asset that the fail-closed gate denied.
 
-Decision: Explicit backend logout/revocation is required.
+The shell still rendered and all seven Gradio security smoke checks passed.
 
-Status: Live integration pending.
+Resolution: Preserve the denial for the current non-interactive phase.
 
-### R4 — Refresh concurrency
+Classification: Expected security restriction; reconsider narrowly if future UI behavior requires the resource.
 
-Risk: Concurrent refresh attempts may conflict.
+### Finding D — Disposable account HTTP 401
 
-Decision: Per-session locking and consistent rotation.
+One previously used test account was rejected during earlier live authentication testing. Another disposable account successfully authenticated and completed the full smoke test.
 
-Status: Unit-tested.
+The rejected account's credentials/history were not investigated.
 
-### R5 — External model costs
+Classification: Unresolved account-specific observation; not sufficient evidence of a general application defect.
 
-Risk: Gemini pricing, quotas, or model availability
-may change.
+## 13. Phase 5.2.4 acceptance decision
 
-Decision: Obtain approval before live model testing.
+**Decision: Technical implementation and verification COMPLETE.**
 
-Status: No live Phase 5 model calls authorized.
+Evidence:
 
-### R6 — Browser-visible credentials
+1. Backend-connected frontend login/logout verified.
+2. Server-side credential ownership retained.
+3. Browser identity rotation verified.
+4. Independent browser isolation verified.
+5. Trusted-Origin enforcement covered.
+6. Backend failure classification covered.
+7. PostgreSQL authentication contract passed.
+8. Real refresh-token rotation verified.
+9. Restricted Gradio routes remained blocked.
+10. Full guarded regression passed with no failures.
+11. Syntax and Git whitespace checks passed.
 
-Risk: JWTs or registry handles could leak through UI state.
+This acceptance is limited to the secured frontend HTTP authentication boundary.
 
-Decision: Keep credentials and handles server-side.
+It does not authorize interactive Gradio events, file access, production deployment or real customer-data processing.
 
-Status: Interactive UI verification pending.
+**Administrative closure remains pending until the issue log and scoped Git commit are completed.**
 
-### R7 — Gradio resource routes
+## 14. Documentation and version-control closure
 
-Risk: Queue, event, upload, and file routes may bypass
-callback-level checks.
+Before staging:
 
-Decision: Block them until ownership is verified.
-
-Status: Restricted boundary verified; interactive
-authorization pending.
-
-### R8 — Cookie lifecycle mismatch
-
-Risk: Browser cookie and server-side session expiration
-may differ.
-
-Decision: Verify coordinated expiration and cleanup.
-
-Status: Full interactive lifecycle testing pending.
-
-### R9 — Session fixation
-
-Risk: An attacker may influence the browser identity
-retained after authentication.
-
-Decision: Rotate identity after successful login.
-
-Status: Binding unit-tested; HTTP login integration pending.
-
-### R10 — Deployment misconfiguration
-
-Risk: Insecure cookies, untrusted proxy headers,
-exposed legacy application, or multiple workers.
-
-Decision: Explicit deployment restrictions.
-
-Status: Production deployment review pending.
-
-### R11 — Static-resource exposure
-
-Risk: A broadly permitted static directory might
-contain sensitive or user-controlled resources.
-
-Decision: Narrow public resource allowlist and
-review deployed static-file routing.
-
-Status: Bundled font and route tests passed;
-production asset review remains pending.
-
-## 12. Verification record
-
-### 12.1 Earlier frontend checkpoints
-
-User-reported historical results:
-
-- Browser session binding: 27 passed.
-- HTTP cookie utilities: 7 passed.
-- Frontend regression: 80 passed.
-- Earlier full suite: 340 passed.
-- Subsequent restricted HTTP suite: 13 passed.
-- Subsequent full suite: 353 passed.
-- Expanded HTTP suite: 35 passed.
-- Expanded full suite: 375 passed.
-
-These results are historical checkpoints.
-
-### 12.2 Final Phase 5.2.3B verification
-
-Date: 4 November 2026.
-
-User-reported final results:
-
-| Verification | Result |
-|---|---|
-| HTTP security integration | 37 passed |
-| Complete project regression | 377 passed |
-| Database integration tests | 35 skipped |
-| Additional subtests | 12 passed |
-| Restricted browser shell | Rendered successfully |
-| Bundled Gradio font | HTTP 200 OK |
-| Direct `/ui/` without valid cookie | HTTP 401 as designed |
-
-The 35 database integration tests are disabled by default
-through `RUN_PHASE4_DB_TESTS`.
-
-They are intentionally skipped, not passed.
-
-Run them only with an isolated test database and
-isolated document/vector storage.
-
-### 12.3 Final browser observations
-
-A fresh private browser session successfully opened:
-
-`http://127.0.0.1:7860/`
-
-The browser displayed:
+1. Replace the root README with the verified Phase 5.2.4 version.
+2. Replace this architecture document.
+3. Reconcile the existing engineering issue log.
+4. Review the exact changed and untracked files.
+5. Confirm no secrets, local captures or unrelated research files are included.
+6. Run the pre-staging checks.
+7. Stage only Phase 5.2.4 source, tests, smoke scripts and approved documentation.
+8. Inspect the staged diff.
+9. Create one descriptive, scoped commit.
+
+Exclude unless separately approved:
 
 ```text
-Health Risk & Cost Advisor
-
-Secure frontend initialization.
-Authentication UI and protected operations
-are not enabled yet.
+docs/research/
+tests/evaluation/phase447c_performance.local.json
+tests/evaluation/phase447c_retrieval_results.local.json
 ```
 
-This is the intended restricted Gradio shell.
+The commit message should describe the actual security and authentication work, not merely state that Phase 5.2.4 was completed.
 
-The previously blocked resource:
+No Phase 5.2.4 commit is recorded at the time of this document update.
 
-`/ui/static/fonts/SourceSansPro/SourceSansPro-SemiBold.woff2`
+---
 
-returned HTTP 200 OK after the font allowlist correction.
-
-Direct access to `/ui/` without a registered browser
-cookie returned:
-
-```json
-{"detail": "Browser session required."}
-```
-
-That is the expected fail-closed response.
-
-### 12.4 Verification commands
-
-HTTP integration:
-
-```bash
-python -m pytest \
-  tests/integration_tests/test_gradio_security.py -v
-```
-
-Frontend regression:
-
-```bash
-python -m pytest \
-  tests/unit_tests/test_frontend_api_client.py \
-  tests/unit_tests/test_frontend_session_manager.py \
-  tests/unit_tests/test_frontend_session_binding.py \
-  tests/unit_tests/test_browser_session_binding.py \
-  tests/unit_tests/test_http_session.py -q
-```
-
-Complete regression:
-
-```bash
-python -m pytest -q -rs
-```
-
-No Gemini or other potentially paid external calls
-are required for these tests.
-
-## 13. Phase 5.2.3B closure decision
-
-**Decision: COMPLETE — Restricted HTTP Security Boundary.**
-
-Acceptance evidence:
-
-- Browser cookie bootstrap verified.
-- Missing and forged cookies rejected in HTTP tests.
-- Restricted Gradio shell rendered in a browser.
-- Required public stylesheet and font resources permitted.
-- Protected Gradio event and file routes remain blocked.
-- Unknown and unsafe routes fail closed.
-- HTTP security integration: 37 passed.
-- Complete regression: 377 passed.
-- No reported test failures.
-- Intentional database skips documented.
-
-This decision applies only to the restricted,
-non-interactive HTTP security boundary.
-
-It does not certify:
-
-- Interactive Gradio resource authorization.
-- Authenticated dashboard functionality.
-- Production HTTPS deployment.
-- Complete security against all attack classes.
-- End-to-end insurance prediction or RAG integration.
-
-The next milestone is Phase 5.2.4.
-
-## 14. Documentation and version control
-
-At each milestone, record:
-
-- Files created or modified.
-- Architectural decisions.
-- Security assumptions.
-- Test commands and actual results.
-- Known limitations.
-- Regressions and fixes.
-- Potentially chargeable external calls.
-
-Maintain the engineering issue log throughout development.
-
-Deliver the consolidated issue-log update at the
-agreed phase-completion milestone.
-
-Before committing:
-
-1. Review the intended changed files.
-2. Confirm no secrets or generated storage are staged.
-3. Run `git diff --check`.
-4. Confirm final test results.
-5. Stage implementation, tests, README, and architecture.
-6. Review the staged diff.
-7. Commit the verified milestone.
-
-Do not mark skipped tests as passed.
-
-Do not mark disabled Gradio endpoints as successfully
-authorized interactive endpoints.
-
-Do not claim production readiness from local tests alone.
+**Next action:** Complete the engineering issue-log reconciliation and pre-staging review. After a clean staged-diff inspection, commit the verified Phase 5.2.4 implementation. Phase 5.2.5 is the next development milestone.
