@@ -26,6 +26,7 @@ frontend.http_session.
 
 RESPONSIBILITIES / WHAT WE TEST
 -------------------------------
+- Authentication-page landing redirect.
 - Browser cookie bootstrap.
 - Secure cookie attributes.
 - Cookie reuse.
@@ -39,10 +40,14 @@ RESPONSIBILITIES / WHAT WE TEST
 
 SECURITY NOTES
 --------------
-These tests verify a restricted, non-interactive shell.
+These tests verify the browser identity boundary
+and the restricted, non-interactive Gradio shell.
 
-They do not establish authorization of enabled Gradio
-events, queue results, or private documents.
+A browser identity cookie is not proof of a
+successfully authenticated user account.
+
+These tests do not establish authorization of enabled
+Gradio events, queue results, or private documents.
 
 Those capabilities remain disabled until later phases.
 """
@@ -73,15 +78,37 @@ def client():
 
 
 def bootstrap_browser(client: TestClient) -> None:
-    """Establish a server-issued anonymous browser identity."""
+    """
+    Establish a server-issued anonymous browser identity.
+
+    Phase 5.2.5B changed the landing destination
+    from /ui/ to /auth.
+
+    This helper checks browser bootstrap only.
+    It does not perform account authentication.
+    """
 
     response = client.get("/")
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/ui/"
+    assert response.headers["location"] == "/auth"
+
+
+def test_root_redirects_to_authentication_page(client):
+    """
+    Verify that the application starts at the
+    authentication entry point.
+    """
+
+    response = client.get("/")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth"
 
 
 def test_bootstrap_issues_httponly_cookie(client):
+    """Verify browser identity cookie security attributes."""
+
     response = client.get("/")
 
     assert response.status_code == 303
@@ -95,6 +122,8 @@ def test_bootstrap_issues_httponly_cookie(client):
 
 
 def test_cookie_is_reused_on_second_bootstrap(client):
+    """Existing valid browser identity must be reused."""
+
     first = client.get("/")
     second = client.get("/")
 
@@ -104,6 +133,8 @@ def test_cookie_is_reused_on_second_bootstrap(client):
 
 
 def test_no_cookie_cannot_access_gradio(client):
+    """Reject requests without a browser identity cookie."""
+
     client.cookies.clear()
 
     response = client.get("/ui/")
@@ -112,6 +143,8 @@ def test_no_cookie_cannot_access_gradio(client):
 
 
 def test_forged_cookie_cannot_access_gradio(client):
+    """Reject forged browser identity cookies."""
+
     client.cookies.set(COOKIE_NAME, "forged")
 
     response = client.get("/ui/")
@@ -120,6 +153,13 @@ def test_forged_cookie_cannot_access_gradio(client):
 
 
 def test_authenticated_browser_can_access_shell(client):
+    """
+    A recognized browser identity can load the
+    restricted, non-interactive Gradio shell.
+
+    This is not an authenticated user-account test.
+    """
+
     bootstrap_browser(client)
 
     response = client.get("/ui/")
@@ -144,6 +184,8 @@ def test_theme_css_is_not_blocked_by_security_gate(client):
 
 
 def test_theme_css_requires_browser_cookie(client):
+    """A browser without identity cannot request the theme."""
+
     client.cookies.clear()
 
     response = client.get("/ui/theme.css")
@@ -177,6 +219,11 @@ def test_protected_gradio_routes_fail_closed(
     path,
     method,
 ):
+    """
+    Browser identity must never authorize
+    protected Gradio operations.
+    """
+
     bootstrap_browser(client)
 
     response = client.request(method, path)
@@ -196,6 +243,8 @@ def test_protected_gradio_routes_fail_closed(
     ],
 )
 def test_unknown_routes_fail_closed(client, path):
+    """Unknown and unapproved Gradio paths are denied."""
+
     bootstrap_browser(client)
 
     response = client.get(path)
@@ -208,6 +257,8 @@ def test_unknown_routes_fail_closed(client, path):
     ["POST", "PUT", "PATCH", "DELETE"],
 )
 def test_unsafe_methods_are_blocked_on_shell(client, method):
+    """The restricted shell must reject unsafe methods."""
+
     bootstrap_browser(client)
 
     response = client.request(method, "/ui/")
@@ -216,6 +267,8 @@ def test_unsafe_methods_are_blocked_on_shell(client, method):
 
 
 def test_healthcheck_is_public(client):
+    """Health checks must not require browser authentication."""
+
     response = client.get("/healthz")
 
     assert response.status_code == 200
@@ -224,7 +277,8 @@ def test_healthcheck_is_public(client):
 
 def test_two_browser_clients_receive_different_cookies():
     """
-    Independent clients must not share browser identities.
+    Independent browser clients must receive
+    independent server-issued browser identities.
     """
 
     application = create_app(secure_cookie=False)
@@ -255,11 +309,12 @@ def test_two_browser_clients_receive_different_cookies():
 
 def test_unrecognized_mount_path_is_not_authorized():
     """
-    The gate must not accidentally authorize a different
-    application namespace.
+    The gate must not accidentally authorize
+    another application namespace.
     """
 
     application = create_app(secure_cookie=False)
+
     gate = GradioSecurityGate(
         application.state.session_cookies
     )
@@ -278,6 +333,8 @@ def test_unrecognized_mount_path_is_not_authorized():
 
 
 def test_invalid_mount_path_is_rejected():
+    """Reject invalid security-gate mount configuration."""
+
     application = create_app(secure_cookie=False)
     cookies = application.state.session_cookies
 
@@ -290,11 +347,12 @@ def test_invalid_mount_path_is_rejected():
 
 def test_asset_path_validation_rejects_suspicious_paths():
     """
-    Verify the gate's allowlist logic without relying
-    on the HTTP client's URL normalization.
+    Verify the gate's allowlist logic without
+    relying on HTTP client URL normalization.
     """
 
     application = create_app(secure_cookie=False)
+
     gate = GradioSecurityGate(
         application.state.session_cookies
     )
@@ -315,6 +373,7 @@ def test_asset_path_validation_rejects_suspicious_paths():
         "/ui/assets//private"
     )
 
+
 def test_public_gradio_font_is_accessible(client):
     """Bundled Gradio fonts must load for a valid browser."""
 
@@ -329,7 +388,7 @@ def test_public_gradio_font_is_accessible(client):
 
 
 def test_unapproved_static_resource_is_blocked(client):
-    """Other static paths must remain inaccessible."""
+    """Unapproved static resources must remain inaccessible."""
 
     bootstrap_browser(client)
 

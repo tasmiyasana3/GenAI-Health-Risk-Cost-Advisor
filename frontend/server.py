@@ -6,8 +6,12 @@ SECURED FRONTEND ASGI ENTRY POINT
 
 PURPOSE
 -------
-Serve the restricted Gradio shell and provide server-side
-browser authentication through the existing FastAPI backend.
+Serve the restricted Gradio shell and provide browser
+authentication through the existing FastAPI backend.
+
+Phase 5.2.5B provides interactive registration, login,
+status, and logout through a server-controlled browser
+identity. It also enforces bounded authentication bodies.
 
 ENVIRONMENT / CONFIGURATION
 ---------------------------
@@ -15,57 +19,76 @@ FRONTEND_COOKIE_SECURE:
     true for HTTPS; false only for local HTTP development.
 
 FRONTEND_ALLOWED_ORIGIN:
-    Exact trusted frontend origin, e.g. http://127.0.0.1:7860.
+    Exact trusted frontend origin, for example:
+    http://127.0.0.1:7860
 
 API_BASE_URL:
-    Existing backend URL used by FrontendAPIClient.
+    Existing FastAPI backend URL.
 
-The in-memory browser registry requires a single frontend
-worker. Multi-worker deployment needs shared session storage.
+The in-memory browser registry supports independent
+browser sessions within one frontend worker.
+
+Shared session storage is required before deploying
+multiple frontend workers.
 
 DEPENDENCIES
 ------------
-FastAPI, Gradio, Pydantic, and existing frontend services.
+FastAPI, Gradio, Pydantic, Starlette, and existing
+frontend authentication and security modules.
 
 RESPONSIBILITIES / WHAT WE TEST
 -------------------------------
 - Anonymous browser bootstrap.
 - Restricted Gradio HTTP boundary.
-- Origin-validated login and logout.
+- Registration through the existing backend.
+- Origin-validated authentication writes.
+- Bounded authentication request bodies.
 - Browser identity rotation after login.
 - Server-side credential isolation.
-- Correct authentication error classification.
-- Backend logout and local cookie invalidation.
-- Non-sensitive authentication status responses.
+- Authentication error classification.
+- Logout and browser-cookie invalidation.
+- Security headers and CSP nonce generation.
 
 SECURITY NOTES
 --------------
-- Backend JWT and refresh credentials stay server-side.
-- Browser cookies are opaque, HttpOnly and SameSite=Strict.
-- Authentication-changing routes require a trusted Origin.
-- Backend revocation failures are not reported as success.
-- No authenticated Gradio callbacks are enabled here.
-- Origin checking is not a complete future Gradio CSRF policy.
-- Login rate limiting and production abuse protection
-  must be addressed before public deployment.
+- JWT and refresh credentials remain server-side.
+- Browser identity cookies are HttpOnly and SameSite=Strict.
+- Authentication writes require a trusted Origin.
+- Authentication bodies are limited before JSON parsing.
+- Private Starlette request attributes are not modified.
+- Gradio event, upload, queue, and file routes stay disabled.
+- Failed backend revocation is not reported as success.
+- Rate limiting is required before public deployment.
+- This implementation is not horizontally scalable yet.
 """
 
 from __future__ import annotations
 
 import os
+import secrets
 
 import gradio as gr
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 from pydantic import BaseModel, Field
 
-from frontend.api_client import FrontendAPIClient, FrontendAPIError
-from frontend.auth_coordinator import FrontendAuthenticationCoordinator
+from frontend.api_client import (
+    FrontendAPIClient,
+    FrontendAPIError,
+)
+from frontend.auth_coordinator import (
+    FrontendAuthenticationCoordinator,
+)
 from frontend.auth_origin import (
     AuthenticationOriginError,
     AuthenticationOriginGuard,
 )
+from frontend.auth_page import render_auth_page
 from frontend.browser_session_binding import BrowserSessionBinding
 from frontend.gradio_security import GradioSecurityGate
 from frontend.http_session import (
@@ -75,11 +98,132 @@ from frontend.http_session import (
 from frontend.session_binding import SessionRegistry
 
 
+MAX_AUTH_REQUEST_BYTES = 4096
+
+AUTH_WRITE_PATHS = frozenset(
+    {
+        "/frontend-auth/login",
+        "/frontend-auth/register",
+        "/frontend-auth/logout",
+    }
+)
+
+
+class AuthenticationBodyLimitMiddleware:
+    """
+    Limit authentication request bodies using the ASGI protocol.
+
+    The middleware reads no more than the configured maximum
+    plus one byte before deciding whether to reject a request.
+
+    Accepted bodies are replayed through an ASGI receive
+    callable. No private Starlette request attributes are used.
+
+    Other application routes pass through unchanged.
+    """
+
+    def __init__(
+        self,
+        app,
+        max_body_bytes: int = MAX_AUTH_REQUEST_BYTES,
+    ) -> None:
+        if max_body_bytes < 1:
+            raise ValueError(
+                "Authentication body limit must be positive."
+            )
+
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope, receive, send) -> None:
+        # Non-HTTP traffic must not be intercepted.
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "").upper()
+        path = scope.get("path", "")
+
+        if method != "POST" or path not in AUTH_WRITE_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        body = bytearray()
+
+        # Read the body through the public ASGI receive interface.
+        # Reject as soon as the request exceeds the limit.
+        while True:
+            message = await receive()
+            message_type = message.get("type")
+
+            if message_type == "http.disconnect":
+                # The client disconnected before completing the
+                # request. Do not invoke the application handler.
+                return
+
+            if message_type != "http.request":
+                continue
+
+            chunk = message.get("body", b"")
+
+            if len(body) + len(chunk) > self.max_body_bytes:
+                response = JSONResponse(
+                    {
+                        "detail": (
+                            "Authentication request is too large."
+                        )
+                    },
+                    status_code=413,
+                    headers={
+                        "Cache-Control": "no-store",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+
+                await response(scope, receive, send)
+                return
+
+            body.extend(chunk)
+
+            if not message.get("more_body", False):
+                break
+
+        # The downstream application receives exactly the
+        # validated body, using standard ASGI messages.
+        replayed = False
+
+        async def replay_receive():
+            nonlocal replayed
+
+            if not replayed:
+                replayed = True
+
+                return {
+                    "type": "http.request",
+                    "body": bytes(body),
+                    "more_body": False,
+                }
+
+            # Once the body has been delivered, forward later
+            # receive calls to the original channel. This also
+            # preserves downstream disconnect notifications.
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+
 class LoginRequest(BaseModel):
     """Constrain browser-submitted login fields."""
 
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=1024)
+
+
+class RegistrationRequest(BaseModel):
+    """Constrain browser-submitted registration fields."""
+
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12, max_length=1024)
 
 
 def create_app(
@@ -88,7 +232,16 @@ def create_app(
     api_client: FrontendAPIClient | None = None,
     allowed_origin: str | None = None,
 ) -> FastAPI:
-    """Build the isolated, restricted frontend ASGI application."""
+    """
+    Build the secured frontend ASGI application.
+
+    Dependency injection is preserved for offline tests
+    and compatibility with the existing authentication suite.
+    """
+
+    # ---------------------------------------------------------
+    # 1. Configuration and security dependencies
+    # ---------------------------------------------------------
 
     if secure_cookie is None:
         raw_setting = os.getenv(
@@ -108,7 +261,9 @@ def create_app(
 
     cookies = HTTPSessionCookies(
         binding,
-        settings=HTTPSessionSettings(secure=secure_cookie),
+        settings=HTTPSessionSettings(
+            secure=secure_cookie
+        ),
     )
 
     gate = GradioSecurityGate(cookies)
@@ -130,12 +285,25 @@ def create_app(
         openapi_url=None,
     )
 
-    def origin_denial(request: Request) -> JSONResponse | None:
-        """
-        Validate the browser Origin for authentication writes.
+    # Register the pure ASGI limiter.
+    # It operates independently of FastAPI request parsing.
+    application.add_middleware(
+        AuthenticationBodyLimitMiddleware,
+        max_body_bytes=MAX_AUTH_REQUEST_BYTES,
+    )
 
-        Fail closed when the trusted origin is not configured.
-        Never derive the trusted origin from request headers.
+    # ---------------------------------------------------------
+    # 2. Shared security helpers
+    # ---------------------------------------------------------
+
+    def origin_denial(
+        request: Request,
+    ) -> JSONResponse | None:
+        """
+        Validate the trusted Origin for authentication writes.
+
+        The trusted origin comes from explicit configuration,
+        never an untrusted Host or Referer header.
         """
 
         try:
@@ -146,7 +314,8 @@ def create_app(
             return JSONResponse(
                 {
                     "detail": (
-                        "Frontend authentication is not configured."
+                        "Frontend authentication "
+                        "is not configured."
                     )
                 },
                 status_code=503,
@@ -156,31 +325,89 @@ def create_app(
             guard.validate(request)
         except AuthenticationOriginError:
             return JSONResponse(
-                {"detail": "Request origin is not allowed."},
+                {
+                    "detail": (
+                        "Request origin is not allowed."
+                    )
+                },
                 status_code=403,
             )
 
         return None
 
+    def browser_identity_denial(
+        request: Request,
+    ) -> tuple[str | None, JSONResponse | None]:
+        """
+        Read an existing registered browser identity.
+
+        Unknown cookies are not accepted as identities.
+        """
+
+        identity = cookies.read_identity(request)
+
+        if identity is None:
+            return None, JSONResponse(
+                {
+                    "detail": "Browser session required."
+                },
+                status_code=401,
+            )
+
+        return identity, None
+
+    # ---------------------------------------------------------
+    # 3. HTTP security middleware
+    # ---------------------------------------------------------
+
     @application.middleware("http")
     async def enforce_boundary(request: Request, call_next):
-        """Preserve the restrictive Phase 5.2.3B Gradio gate."""
+        """
+        Preserve the existing restrictive Gradio gate.
+
+        Add response security headers to authentication routes.
+
+        Request-body limiting is handled separately by the
+        supported ASGI middleware above.
+        """
 
         denial = await gate.authorize(request)
 
         if denial is not None:
             return denial
 
-        return await call_next(request)
+        response = await call_next(request)
 
-    @application.get("/", include_in_schema=False)
+        if (
+            request.url.path == "/auth"
+            or request.url.path.startswith("/frontend-auth/")
+        ):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = (
+                "nosniff"
+            )
+            response.headers["Referrer-Policy"] = (
+                "no-referrer"
+            )
+            response.headers["X-Frame-Options"] = "DENY"
+
+        return response
+
+    # ---------------------------------------------------------
+    # 4. Browser bootstrap and authentication page
+    # ---------------------------------------------------------
+
+    @application.get(
+        "/",
+        include_in_schema=False,
+    )
     def bootstrap(request: Request):
-        """Create an anonymous browser identity when required."""
+        """Create an anonymous browser identity if required."""
 
         identity = cookies.read_identity(request)
 
         response = RedirectResponse(
-            "/ui/",
+            "/auth",
             status_code=303,
         )
 
@@ -190,11 +417,65 @@ def create_app(
 
         return response
 
-    @application.get("/healthz", include_in_schema=False)
+    @application.get(
+        "/auth",
+        include_in_schema=False,
+        response_class=HTMLResponse,
+    )
+    def authentication_page(request: Request):
+        """
+        Render the authentication interface.
+
+        Each response receives a fresh CSP nonce.
+        """
+
+        identity = cookies.read_identity(request)
+
+        if identity is None:
+            identity = binding.create()
+
+        script_nonce = secrets.token_urlsafe(24)
+
+        response = HTMLResponse(
+            content=render_auth_page(
+                script_nonce=script_nonce
+            ),
+            status_code=200,
+        )
+
+        cookies.set_identity(response, identity)
+
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "script-src 'nonce-" + script_nonce + "'; "
+            "style-src 'unsafe-inline'; "
+            "connect-src 'self'; "
+            "form-action 'self'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'"
+        )
+
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = (
+            "nosniff"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+
+        return response
+
+    @application.get(
+        "/healthz",
+        include_in_schema=False,
+    )
     def healthz():
         """Expose a minimal non-sensitive health check."""
 
         return {"status": "ok"}
+
+    # ---------------------------------------------------------
+    # 5. Authentication status
+    # ---------------------------------------------------------
 
     @application.get(
         "/frontend-auth/status",
@@ -202,7 +483,7 @@ def create_app(
     )
     def authentication_status(request: Request):
         """
-        Return only local frontend authentication status.
+        Report local frontend authentication status.
 
         Backend authorization remains authoritative.
         """
@@ -217,9 +498,106 @@ def create_app(
         )
 
         return JSONResponse(
-            {"authenticated": authenticated},
-            headers={"Cache-Control": "no-store"},
+            {
+                "authenticated": authenticated
+            },
+            headers={
+                "Cache-Control": "no-store"
+            },
         )
+
+    # ---------------------------------------------------------
+    # 6. Account registration
+    # ---------------------------------------------------------
+
+    @application.post(
+        "/frontend-auth/register",
+        include_in_schema=False,
+    )
+    def browser_register(
+        request: Request,
+        payload: RegistrationRequest,
+    ):
+        """
+        Register through the existing FastAPI backend.
+
+        Registration does not authenticate the browser,
+        create frontend credentials, or issue JWTs.
+        """
+
+        denial = origin_denial(request)
+
+        if denial is not None:
+            return denial
+
+        identity, identity_denial = browser_identity_denial(
+            request
+        )
+
+        if identity_denial is not None:
+            return identity_denial
+
+        if coordinator.is_authenticated(
+            browser_identity=identity
+        ):
+            return JSONResponse(
+                {
+                    "detail": (
+                        "Browser is already authenticated."
+                    )
+                },
+                status_code=409,
+            )
+
+        try:
+            client.register(
+                email=payload.email,
+                password=payload.password,
+            )
+
+        except FrontendAPIError as error:
+            if error.status_code == 409:
+                return JSONResponse(
+                    {
+                        "detail": (
+                            "Account could not be created "
+                            "with these details."
+                        )
+                    },
+                    status_code=409,
+                )
+
+            if error.status_code in {400, 422}:
+                return JSONResponse(
+                    {
+                        "detail": (
+                            "Invalid registration details."
+                        )
+                    },
+                    status_code=422,
+                )
+
+            return JSONResponse(
+                {
+                    "detail": (
+                        "Registration service temporarily "
+                        "unavailable."
+                    )
+                },
+                status_code=503,
+            )
+
+        return JSONResponse(
+            {
+                "registered": True,
+                "authenticated": False,
+            },
+            status_code=201,
+        )
+
+    # ---------------------------------------------------------
+    # 7. Login — preserve Phase 5.2.4 coordination
+    # ---------------------------------------------------------
 
     @application.post(
         "/frontend-auth/login",
@@ -232,7 +610,7 @@ def create_app(
         """
         Authenticate and rotate the browser identity.
 
-        Never return backend access or refresh credentials.
+        Backend tokens never appear in the HTTP response.
         """
 
         denial = origin_denial(request)
@@ -244,7 +622,9 @@ def create_app(
 
         if identity is None:
             return JSONResponse(
-                {"detail": "Browser session required."},
+                {
+                    "detail": "Browser session required."
+                },
                 status_code=401,
             )
 
@@ -268,20 +648,17 @@ def create_app(
             )
 
         except FrontendAPIError as error:
-            # Only an explicit backend 401 represents
-            # invalid authentication credentials.
             if error.status_code == 401:
                 return JSONResponse(
                     {
                         "detail": (
-                            "Authentication could not be completed."
+                            "Authentication could not "
+                            "be completed."
                         )
                     },
                     status_code=401,
                 )
 
-            # Includes connection failures, timeouts,
-            # backend 5xx, and malformed backend responses.
             return JSONResponse(
                 {
                     "detail": (
@@ -293,9 +670,13 @@ def create_app(
             )
 
         response = JSONResponse(
-            {"authenticated": True},
+            {
+                "authenticated": True
+            },
             status_code=200,
-            headers={"Cache-Control": "no-store"},
+            headers={
+                "Cache-Control": "no-store"
+            },
         )
 
         cookies.set_identity(
@@ -305,16 +686,20 @@ def create_app(
 
         return response
 
+    # ---------------------------------------------------------
+    # 8. Logout — preserve backend revocation behavior
+    # ---------------------------------------------------------
+
     @application.post(
         "/frontend-auth/logout",
         include_in_schema=False,
     )
     def browser_logout(request: Request):
         """
-        Attempt backend revocation and remove local browser access.
+        Attempt backend revocation and clear browser access.
 
-        An unsuccessful backend logout is not represented
-        as confirmed remote revocation.
+        Remote revocation failures are not reported as
+        confirmed successful logout.
         """
 
         denial = origin_denial(request)
@@ -326,9 +711,12 @@ def create_app(
 
         if identity is None:
             response = JSONResponse(
-                {"detail": "Browser session required."},
+                {
+                    "detail": "Browser session required."
+                },
                 status_code=401,
             )
+
             cookies.clear_identity(response)
             return response
 
@@ -338,8 +726,6 @@ def create_app(
             )
 
         except FrontendAPIError:
-            # The coordinator terminates the local binding
-            # even if the backend could not revoke the session.
             response = JSONResponse(
                 {
                     "detail": (
@@ -350,8 +736,8 @@ def create_app(
             )
 
         except Exception:
-            # Preserve a safe browser response if an
-            # unexpected cleanup failure occurs.
+            # Unexpected errors must not leave the browser
+            # attached to the old local identity.
             binding.terminate(identity)
 
             response = JSONResponse(
@@ -365,26 +751,33 @@ def create_app(
 
         else:
             response = JSONResponse(
-                {"authenticated": False},
+                {
+                    "authenticated": False
+                },
                 status_code=200,
             )
 
-        # Clear the browser cookie on every attempted
-        # logout, including failed remote revocation.
         cookies.clear_identity(response)
         response.headers["Cache-Control"] = "no-store"
 
         return response
 
-    # Gradio is intentionally non-interactive in this phase.
+    # ---------------------------------------------------------
+    # 9. Restricted Gradio shell
+    # ---------------------------------------------------------
+
+    # Gradio remains deliberately non-interactive.
+    # Authenticated events will receive separate
+    # authorization integration in Phase 5.2.6.
     with gr.Blocks(
         title="Health Advisor — Secure Frontend",
     ) as shell:
         gr.Markdown("# Health Risk & Cost Advisor")
+
         gr.Markdown(
-            "Secure frontend initialization. "
-            "Authentication UI and protected operations "
-            "are not enabled yet."
+            "Secure frontend initialized. "
+            "Authentication is available at /auth. "
+            "Protected policy operations are not enabled yet."
         )
 
     application = gr.mount_gradio_app(
@@ -393,8 +786,12 @@ def create_app(
         path="/ui",
     )
 
-    # Expose dependencies to trusted test/server code only.
-    # Do not serialize these objects to browser responses.
+    # ---------------------------------------------------------
+    # 10. Trusted server-side dependency access
+    # ---------------------------------------------------------
+
+    # These objects are available to trusted tests and
+    # server code, never serialized into browser responses.
     application.state.browser_binding = binding
     application.state.session_cookies = cookies
     application.state.auth_coordinator = coordinator

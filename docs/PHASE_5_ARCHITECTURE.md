@@ -1,15 +1,13 @@
 
 # Phase 5 — Authenticated Frontend Architecture
 
-**Project:** GenAI Health Risk & Cost Advisor V3
-**Branch:** `version_3`
-**Frontend:** Gradio 6.30.0 mounted in FastAPI
-**Backend:** FastAPI
-**Updated:** 5 November 2026
-**Document status:** Living architecture and verification record
-**Current milestone:** Phase 5.2.4 — Implementation and technical verification complete
-**Administrative closure:** Documentation, engineering issue log, pre-staging review and Git commit pending
-**Next milestone:** Phase 5.2.5 — Interactive authentication UI
+
+**Updated:** 6 November 2026
+**Document status:** Living architecture, engineering decisions, security findings and verification record
+**Current milestone:** Phase 5.2.5B — Interactive authentication UI and HTTP security hardening locally verified
+**Previous milestone:** Phase 5.2.4 — Backend-connected frontend authentication verified
+**Next milestone:** Phase 5.2.6 — Authenticated Gradio event and resource ownership
+**Deployment status:** Local development prototype; not production-ready
 
 ---
 
@@ -755,20 +753,33 @@ Verification:
 
 **Remaining administrative work:** Update the engineering issue log, review documentation, inspect Git changes, stage scoped files and commit.
 
+
 ### 5.2.5 — Interactive authentication UI
 
-**Pending.**
+**Status:** Phase 5.2.5B implemented and locally verified — 6 November 2026.
 
-Planned:
+Delivered:
 
-- Registration form.
-- Login form.
-- Logout controls.
-- Authentication status display.
-- Safe error presentation.
-- Session-expiration UX.
+- Dedicated `/auth` registration and login page.
+- Backend-connected registration.
+- Browser-facing authentication status and logout.
+- Safe authentication error handling.
+- Content Security Policy and HTTP security headers.
+- Bounded authentication request bodies.
+- Gradio redirect regression correction.
+- Dedicated authentication HTTP security tests.
 
-No backend tokens may be exposed to browser-side Gradio state.
+Verification:
+
+- 28 new authentication security tests passed.
+- 38 existing Gradio security tests passed.
+- 464 full-suite tests passed.
+- 35 skipped.
+- 12 subtests passed.
+
+Protected Gradio callbacks, queues, uploads and file operations remain disabled.
+
+**Next:** Phase 5.2.6 — Gradio event/resource ownership.
 
 ### 5.2.6 — Gradio event/resource ownership
 
@@ -923,3 +934,542 @@ No Phase 5.2.4 commit is recorded at the time of this document update.
 ---
 
 **Next action:** Complete the engineering issue-log reconciliation and pre-staging review. After a clean staged-diff inspection, commit the verified Phase 5.2.4 implementation. Phase 5.2.5 is the next development milestone.
+
+
+
+---
+
+# Phase 5.2.5B — Interactive Authentication UI and HTTP Security Hardening
+
+**Verification date:** 6 November 2026
+**Status:** Local implementation and automated regression verification complete
+**Scope:** Browser-facing registration/login interface, authentication HTTP routes, browser security headers, request-body limits, and Gradio security regression.
+
+## 1. Objective
+
+Extend the existing Phase 5.2.4 backend-connected authentication boundary with a usable browser authentication interface.
+
+The implementation must preserve:
+
+- Server-side ownership of JWT and refresh credentials.
+- Independent browser-session identities.
+- Backend-controlled authentication and authorization.
+- Trusted-Origin validation.
+- Browser identity rotation after login.
+- Safe logout and error handling.
+- Fail-closed Gradio routes.
+- Existing Phase 4 document ownership and lifecycle rules.
+
+The implementation does not enable protected Gradio callbacks, insurance-policy uploads or RAG operations.
+
+## 2. Architecture
+
+```text
+Browser
+  |
+  | GET /
+  v
+Frontend FastAPI
+  |
+  | Create or reuse anonymous identity
+  | Set opaque HttpOnly cookie
+  | HTTP 303
+  v
+/auth
+  |
+  | Registration / Login interface
+  | CSP nonce and security headers
+  |
+  | Same-origin HTTP requests
+  v
+/frontend-auth/*
+  |
+  +-- ASGI request-body limiter (4096 bytes)
+  +-- Trusted-Origin validation
+  +-- Browser identity validation
+  |
+  v
+FrontendAuthenticationCoordinator
+  |
+  +-- BrowserSessionBinding
+  +-- Per-session credential manager
+  |
+  v
+FrontendAPIClient
+  |
+  | Backend HTTP authentication
+  v
+FastAPI Backend
+  |
+  +-- Argon2id password verification
+  +-- JWT issuance and validation
+  +-- PostgreSQL session persistence
+  +-- Refresh-token rotation
+  +-- Logout and revocation
+```
+
+The browser does not receive backend JWT or refresh credentials.
+
+## 3. Component responsibilities
+
+### 3.1 frontend/auth_page.py
+
+Provides the interactive authentication HTML.
+
+Responsibilities:
+
+- Render registration and login forms.
+- Submit credentials to same-origin frontend routes.
+- Display safe authentication errors.
+- Query non-sensitive authentication status.
+- Support logout.
+- Use a per-response Content Security Policy script nonce.
+
+Security decision:
+
+Authentication credentials are submitted to the frontend server. Backend tokens are never placed in browser JavaScript state, localStorage or Gradio state.
+
+### 3.2 frontend/server.py
+
+Provides the secured frontend ASGI entry point.
+
+Current HTTP routes:
+
+| Method | Route | Responsibility |
+| --- | --- | --- |
+| GET | / | Anonymous browser bootstrap and redirect |
+| GET | /auth | Interactive authentication page |
+| GET | /healthz | Frontend health |
+| GET | /frontend-auth/status | Non-sensitive authentication status |
+| POST | /frontend-auth/register | Backend account registration |
+| POST | /frontend-auth/login | Login and browser identity rotation |
+| POST | /frontend-auth/logout | Logout and local browser access cleanup |
+| GET | /ui/ | Restricted non-interactive Gradio shell |
+
+The root redirect is now:
+
+GET / -> HTTP 303 -> /auth
+
+The previous redirect to /ui/ was valid for the earlier restricted-shell milestone but is superseded.
+
+### 3.3 AuthenticationBodyLimitMiddleware
+
+Purpose:
+
+Enforce an authentication request-body limit before the FastAPI endpoint parses or processes the request.
+
+Maximum body size:
+
+4096 bytes.
+
+Protected routes:
+
+- POST /frontend-auth/register
+- POST /frontend-auth/login
+- POST /frontend-auth/logout
+
+Implementation:
+
+- Intercepts authentication POST requests using the ASGI interface.
+- Reads the incoming body with a bounded byte count.
+- Rejects requests exceeding the configured limit.
+- Returns HTTP 413 for oversized bodies.
+- Replays accepted bodies through the ASGI receive interface.
+- Avoids private Starlette request attributes.
+
+Design rationale:
+
+A security-sensitive request-size limit should not depend on undocumented framework internals.
+
+### 3.4 Existing authentication components
+
+The following responsibilities remain unchanged:
+
+- frontend/api_client.py: Backend HTTP transport.
+- frontend/session_manager.py: Per-session server-side credential lifecycle.
+- frontend/session_binding.py: In-memory session registry.
+- frontend/browser_session_binding.py: Opaque browser identity binding.
+- frontend/http_session.py: Browser cookie issuance and deletion.
+- frontend/auth_coordinator.py: Login, identity rotation, rollback and logout coordination.
+- frontend/auth_origin.py: Exact trusted-Origin validation.
+- frontend/gradio_security.py: Fail-closed Gradio HTTP route restrictions.
+
+The backend remains authoritative for JWT validation, PostgreSQL session validity and policy-document ownership.
+
+## 4. Authentication behavior
+
+### Registration
+
+1. Browser loads /auth.
+2. User submits registration details.
+3. Frontend validates the request boundary.
+4. Frontend forwards registration to the backend.
+5. Backend performs account creation and password hashing.
+6. Successful registration returns HTTP 201.
+7. The browser remains unauthenticated until login.
+
+Duplicate registration returns a safe HTTP 409 response.
+
+### Login
+
+1. Browser submits credentials through the frontend.
+2. Origin and browser identity are validated.
+3. Frontend coordinator requests backend authentication.
+4. Backend validates credentials and creates a persistent session.
+5. Server-side credential state is associated with the browser session.
+6. Browser identity is rotated.
+7. Frontend returns HTTP 200 and a replacement opaque cookie.
+
+Backend tokens remain server-side.
+
+### Logout
+
+1. Browser submits a logout request.
+2. Frontend validates Origin and browser identity.
+3. Coordinator attempts backend logout and revocation.
+4. Local browser access is cleared.
+5. Browser identity cookie is removed.
+6. Authentication status becomes false.
+
+Unconfirmed backend revocation must not be reported as confirmed success.
+
+## 5. Engineering issue P5.2.5B-01
+
+### Title
+
+Legacy Gradio bootstrap redirect assertion.
+
+### Observed failure
+
+The existing Gradio security integration suite reported 28 failures.
+
+All 28 failures stopped at the browser bootstrap assertion before executing their intended protected-route checks.
+
+### Root cause
+
+The test helper expected:
+
+```python
+assert response.headers["location"] == "/ui/"
+```
+
+The new authentication architecture intentionally redirects to:
+
+```python
+assert response.headers["location"] == "/auth"
+```
+
+### Correction
+
+Updated:
+
+tests/integration_tests/test_gradio_security.py
+
+Changes:
+
+1. Updated bootstrap_browser() to expect /auth.
+2. Added test_root_redirects_to_authentication_page().
+3. Preserved the existing protected Gradio route assertions.
+4. Preserved forged-cookie and missing-cookie checks.
+5. Preserved unsafe-method and unknown-route checks.
+6. Preserved browser identity isolation tests.
+
+### Expected result
+
+38 Gradio security tests pass.
+
+### Observed result
+
+38 passed.
+
+### Classification
+
+Resolved test compatibility regression.
+
+The original failures did not establish an authorization vulnerability because the tests stopped before reaching their security assertions.
+
+### Engineering lesson
+
+When an application entry point changes, integration tests must be updated to reflect the new contract without weakening security expectations.
+
+## 6. Engineering issue P5.2.5B-02
+
+### Title
+
+Private Starlette request-body attribute dependency.
+
+### Observed implementation
+
+The previous request-body handling used:
+
+```python
+request._body = bytes(body)
+```
+
+### Root cause
+
+The middleware consumed an HTTP request body and depended on a private Starlette attribute to make it available downstream.
+
+### Engineering risk
+
+Private framework attributes are not guaranteed stable interfaces.
+
+This creates avoidable maintenance and compatibility risk.
+
+### Correction
+
+Replaced the private attribute approach with pure ASGI request-body handling.
+
+The middleware:
+
+- Enforces a 4096-byte limit.
+- Returns HTTP 413 for oversized requests.
+- Replays accepted request bodies using ASGI receive.
+- Preserves normal downstream request validation.
+- Prevents oversized requests from reaching authentication handlers.
+
+### Verification
+
+The new authentication security tests passed.
+
+The full default regression suite passed.
+
+### Classification
+
+Framework compatibility and HTTP security hardening.
+
+### Status
+
+Implemented and covered by passing local tests.
+
+## 7. New automated security verification
+
+New test file:
+
+tests/integration_tests/test_phase525b_auth_security.py
+
+The test suite covers:
+
+- Authentication-page security headers.
+- Content Security Policy nonce uniqueness.
+- HttpOnly browser identity cookies.
+- SameSite cookie restrictions.
+- Successful registration.
+- Registration without a valid browser identity.
+- Missing and untrusted Origin rejection.
+- Oversized request rejection.
+- Accepted request-body handling.
+- Malformed JSON rejection.
+- Invalid registration fields.
+- Duplicate registration error mapping.
+- Backend registration failure handling.
+- Invalid login handling.
+- Browser identity rotation.
+- Browser-facing JWT non-disclosure.
+- Logout cookie invalidation.
+- Logout backend failure handling.
+- Independent browser identities.
+- Continued Gradio route restrictions.
+
+Backend authentication operations are mocked for this suite.
+
+These tests do not make paid API requests or independently prove backend JWT cryptography.
+
+## 8. Verification results
+
+### Focused authentication security suite
+
+Command:
+
+```bash
+python -m pytest tests/integration_tests/test_phase525b_auth_security.py -q --tb=short
+```
+
+Observed:
+
+28 passed.
+
+### Existing Gradio security suite
+
+Command:
+
+```bash
+python -m pytest tests/integration_tests/test_gradio_security.py -q --tb=short
+```
+
+Observed:
+
+38 passed.
+
+### Full default regression suite
+
+Command:
+
+```bash
+python -m pytest tests/ -q --tb=short
+```
+
+Observed:
+
+464 passed, 35 skipped, 12 subtests passed.
+
+### Interpretation
+
+The previous default-suite checkpoint was 436 passed.
+
+The addition of 28 authentication security tests increased the passing count to 464.
+
+The 35 skipped tests are not counted as successful tests.
+
+The earlier Phase 5.2.4 guarded database-enabled regression result of 470 passed belongs to a different test configuration and remains a separate historical checkpoint.
+
+No regression failures were reported.
+
+## 9. Manual browser verification
+
+The following behavior was reported during interactive testing:
+
+| Scenario | Observed behavior |
+| --- | --- |
+| New account registration | HTTP 201 |
+| Duplicate account registration | HTTP 409 |
+| Valid login | HTTP 200 |
+| Logout | HTTP 200 |
+| Refresh after logout | Sign-in state displayed |
+| Separate browser contexts | Logout isolation observed |
+| Browser Back navigation | Disabled during the tested flow |
+
+Browser history behavior is not an authorization control.
+
+Security depends on server-side session validation and route authorization.
+
+## 10. Security limitations
+
+Phase 5.2.5B does not establish:
+
+- Production security certification.
+- Authenticated Gradio callback authorization.
+- Queue/event ownership.
+- Protected upload and file-serving authorization.
+- Multi-worker session correctness.
+- Full concurrent-load resilience.
+- Rate limiting or public-deployment abuse protection.
+- RAG answer correctness.
+- Complete insurance-policy workflow integration.
+
+The frontend registry remains in-memory and single-worker.
+
+FRONTEND_COOKIE_SECURE=false is restricted to local HTTP development.
+
+No real customer documents should be used in an unreviewed deployment.
+
+## 11. Architecture decision record
+
+### ADR-5.2.5B-01: Dedicated authentication page
+
+Decision:
+
+Serve registration/login at /auth before enabling protected Gradio operations.
+
+Reason:
+
+Separate the browser authentication boundary from future authenticated application callbacks.
+
+### ADR-5.2.5B-02: Server-side credential ownership
+
+Decision:
+
+Continue storing backend credentials in per-session Python credential managers.
+
+Reason:
+
+Avoid exposing JWT and refresh credentials to browser-side state.
+
+### ADR-5.2.5B-03: Pure ASGI body-size enforcement
+
+Decision:
+
+Use the ASGI receive interface rather than private Starlette request attributes.
+
+Reason:
+
+Improve framework compatibility, testability and request-boundary control.
+
+### ADR-5.2.5B-04: Preserve fail-closed Gradio routes
+
+Decision:
+
+Do not enable event, queue, upload or file routes during authentication UI development.
+
+Reason:
+
+Browser identity alone does not establish ownership of Gradio events or private resources.
+
+## 12. Interview preparation — engineering rationale
+
+**Q: Why use JWT plus database-backed sessions?**
+
+JWTs support signed access claims, while the database enables explicit session revocation and active-session validation.
+
+A cryptographically valid JWT is insufficient if its associated database session has expired or been revoked.
+
+**Q: Why rotate browser identity after login?**
+
+Rotation reduces session-fixation risk by replacing the pre-authentication browser identity when authenticated credentials become associated with a session.
+
+**Q: Why keep JWTs server-side?**
+
+It reduces browser-side credential exposure and separates frontend presentation from backend authentication transport.
+
+**Q: Why enforce an authentication body-size limit?**
+
+It rejects oversized requests before expensive or sensitive authentication processing and establishes a bounded HTTP input contract.
+
+**Q: Why avoid request._body?**
+
+It is a private implementation attribute. The ASGI receive interface is the supported request-message boundary.
+
+**Q: Why do 38 passing Gradio tests not mean the interactive dashboard is secure?**
+
+Those tests verify the restricted HTTP boundary. They do not prove authorization for enabled callbacks, queued events, uploaded files or session-hash ownership.
+
+**Q: Why is the current frontend limited to one worker?**
+
+The browser/session registry is process-local. Independent workers would not automatically share identity bindings or credential state.
+
+Shared session storage and cross-worker coordination must be designed before horizontal scaling.
+
+**Q: What happens if a user attempts to access another user's insurance policy?**
+
+The backend must validate the authenticated user, active database session, document ownership and document expiration. Frontend authentication alone does not grant document access.
+
+**Q: What remains before deployment?**
+
+Authenticated Gradio event ownership, resource authorization, rate limiting, privacy review, concurrency testing, operational monitoring, recovery procedures and deployment security configuration.
+
+## 13. Phase acceptance
+
+Phase 5.2.5B meets its defined local implementation and automated regression acceptance criteria based on the user-reported test results.
+
+This acceptance is limited to the interactive authentication HTTP boundary and restricted Gradio shell.
+
+It does not approve production deployment or protected interactive application workflows.
+
+## 14. Next engineering milestone
+
+Phase 5.2.6 — Authenticated Gradio Event and Resource Ownership.
+
+Planned engineering tasks:
+
+1. Review the supported Gradio 6.30.0 session and request interfaces.
+2. Bind Gradio sessions to authenticated server-side browser identities.
+3. Authorize event execution before protected callbacks run.
+4. Validate queue and event ownership.
+5. Implement controlled upload and file access.
+6. Reject cross-browser and cross-session impersonation.
+7. Preserve backend document user/session authorization.
+8. Add negative and adversarial security tests.
+9. Run complete local regression verification.
+10. Record decisions, failures, corrections and measured results.
+
+Do not enable protected Gradio workflows until the corresponding ownership checks pass.
