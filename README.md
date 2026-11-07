@@ -1,6 +1,6 @@
 # GenAI Health Risk & Cost Advisor — V3
 
-**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 5.2.5B interactive authentication UI and local HTTP security regression (6 November 2026) · **Next:** Phase 5.2.6 authenticated Gradio event/resource ownership
+**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 5.2.6B server-side trusted Gradio session issuance and authentication integration (7 November 2026) · **Commit:** `4818f23` · **Next:** Phase 5.2.6C interactive callback/queue execution-time authorization
 
 An insurance analytics and policy-document intelligence project combining an existing scikit-learn insurance-cost prediction workflow with a FastAPI-based, retrieval-augmented generation (RAG) backend. Users can authenticate, upload text-based **insurance policy PDFs**, and ask evidence-grounded questions about one or more policies.
 
@@ -18,6 +18,7 @@ An insurance analytics and policy-document intelligence project combining an exi
 | Temporary document lifecycle | 30-minute inactivity expiration; cleanup on logout; optional scheduled cleanup every 600 seconds; PostgreSQL advisory locks coordinate document operations and deletion. |
 | Backward compatibility | Pre-migration ownerless document records are preserved by cleanup but excluded from authenticated document access. |
 | Secured frontend HTTP boundary | Separate FastAPI/Gradio ASGI shell with opaque HttpOnly browser identity, server-side authentication credentials, trusted-Origin validation, backend-connected login/refresh/logout, browser identity rotation, and fail-closed Gradio routes. Interactive `/auth` registration and login UI is enabled; restricted Gradio events, queue, uploads and file routes remain blocked. |
+| Phase 5.2.6B Gradio authentication and trusted session issuance | `GradioAuthenticationAdapter` integrates Gradio `auth_dependency` with the server-side browser binding. `TrustedGradioSessionIssuer` mints unpredictable browser-owned session hashes through `POST /frontend-gradio/session`, checks ownership and current local authentication, and rejects forged/cross-browser hashes. The Gradio browser client is **not yet consuming these hashes**; protected callbacks and resources remain blocked. |
 
 **Phase 4.4.6A verification summary (31 October 2026):** Phase 4.4.6A technical verification is complete: **6 focused document-cleanup integration tests passed**, **40 integration tests passed**, and **252 tests passed** in the database-enabled full regression run. Manual testing also verified independent logins for two users and two sessions for one user, with cross-user and cross-session document isolation. The earlier **184 passed / 29 skipped** Phase 4.4.6 result and **205 passed / 29 skipped** 30 October result are retained below as dated historical checkpoints, not the latest overall result. Full concurrency/load testing is still planned for Phase 6.
 
@@ -800,3 +801,69 @@ Manual checks during the authentication UI work included successful registration
 ### Version control
 
 The Phase 5.2.5B source and tests were reported as committed before this README update. The commit hash and message were not supplied and are therefore not asserted here. Commit this documentation separately using a descriptive `docs:` subject; avoid staging `docs/research/` or local Phase 4.4.7C evaluation JSON files unless explicitly approved.
+
+
+---
+
+## Phase 5.2.6A–B — Authenticated Gradio boundary and trusted server-side sessions (7 November 2026)
+
+**Status:** Phase 5.2.6A architecture/security contract and Phase 5.2.6B **server-side** authentication and session-issuance implementation are complete, locally tested, committed and pushed. **Commit:** `4818f23` (`feat(auth): complete Phase 5.2.6B trusted Gradio sessions`). This is **not** an end-to-end interactive Gradio authorization sign-off or production security certification. Earlier dated milestone statements are preserved above as history; this section supersedes their *current/next* wording.
+
+### Implemented production components
+
+| Component | Verified purpose | Security boundary |
+| --- | --- | --- |
+| `frontend/server.py` | Mounts Gradio with `auth_dependency`, protects `/ui/config`, and exposes `POST /frontend-gradio/session` for authenticated server-side issuance | Origin and browser authentication required for issuance; restricted Gradio event/queue/upload/file paths remain denied |
+| `frontend/gradio_auth.py` | `GradioAuthenticationAdapter` resolves the opaque HttpOnly browser identity to an authenticated server-side session for Gradio | Returns browser identity only; never sends backend access/refresh tokens to the browser |
+| `frontend/browser_session_binding.py` | Maps independently authenticated browser identities to credential managers; includes authenticated Gradio ownership primitives | Prevents anonymous ownership checks and rejects cross-browser bindings; client-supplied session hashes alone do not establish trusted provenance |
+| `frontend/gradio_session_issuer.py` | `TrustedGradioSessionIssuer` mints `secrets.token_urlsafe(32)` identifiers, tracks browser ownership, caps issuance per browser, verifies current local authentication, and supports revocation | Hashes are routing identifiers, **not** independent authorization credentials; issuer state is process-local |
+| `frontend/gradio_security.py` and `frontend/http_session.py` | Existing fail-closed Gradio route restrictions and opaque-cookie validation | Event, queue, upload, and file-serving routes are still blocked until complete authorization is verified |
+
+### Trusted session issuance flow
+
+```text
+Browser (opaque HttpOnly identity cookie)
+    | POST /frontend-gradio/session + trusted Origin
+    v
+Frontend FastAPI boundary
+    | GradioAuthenticationAdapter -> BrowserSessionBinding.resolve()
+    v
+TrustedGradioSessionIssuer.issue(authenticated_identity)
+    | server generates unpredictable hash; records hash -> browser identity
+    v
+JSON {"session_hash": "..."} (Cache-Control: no-store)
+
+Future authorized event: cookie + hash -> issuer.verify() ->
+execution-time Gradio callback authorization (NOT YET ENABLED)
+```
+
+The issuance endpoint does not accept a browser-provided hash as proof of ownership. The authenticated browser may see the issued hash, but it does not receive the JWT, refresh token, or `SessionCredentialManager`. Logout explicitly revokes issued hashes; browser identity rotation and local session termination also cause subsequent verification to fail. Issuer verification **does not independently query the backend** to detect remote PostgreSQL revocation; backend authorization remains authoritative for backend operations.
+
+### Test coverage and observed evidence
+
+| Check | Result |
+| --- | --- |
+| New issuer unit and endpoint integration tests | **15 passed** |
+| Full default local test suite (`python -m pytest tests/ -q --tb=short`) | **520 passed, 35 skipped, 12 subtests passed** |
+| `python -m compileall -q frontend` and `git diff --check` | No errors reported |
+| Git commit and remote branch | `4818f23` on `HEAD -> version_3, origin/version_3` |
+
+The full-suite result is the user's Mac result. The 35 skipped tests must not be represented as executed/passed; opt-in database and live service tests have different prerequisites. The new tests are local and do not invoke paid LLM APIs.
+
+### Security acceptance and explicit exclusions
+
+- **Accepted for Phase 5.2.6B:** server-side Gradio auth adapter, production wiring, local browser/session ownership primitives, trusted server-generated issuance, forged/cross-browser rejection, logout/rotation invalidation, and restricted-route regression coverage.
+- **Not yet accepted:** Gradio browser/client adoption of the server-issued hash; actual callback and queue execution-time checks; delayed-event and logout race protections; authenticated upload/download/file serving; end-to-end policy RAG UI; multi-worker deployment; live backend revocation propagation; production security audit.
+- **Next — Phase 5.2.6C:** establish the trusted browser-to-Gradio event flow and authorize each callback/queue execution against current cookie identity, issued hash ownership, and session validity. Preserve fail-closed behavior until adversarial tests pass.
+- **Then — Phase 5.2.6D/E:** protect uploads/files and document ownership; perform consolidated adversarial/regression review and issue-log/documentation closure.
+- **Then — Phase 5.3:** connect authenticated insurance-cost/advisory and insurance-policy upload/RAG/citations to the interactive frontend.
+
+### Engineering decisions and risk log
+
+1. **Client-supplied session-hash provenance:** Existing `bind_authenticated_gradio_session()` can check authentication but does not establish that a browser-chosen hash was server-issued. **Mitigation implemented:** separate `TrustedGradioSessionIssuer`; **remaining:** integrate issued identifiers with the real Gradio client and event transport.
+2. **Gradio authorization versus backend authorization:** `auth_dependency` authenticates the browser for Gradio, but is not by itself execution-time callback authorization. **Decision:** keep interactive routes denied until explicit per-event checks exist.
+3. **Process-local state:** issuer and credential bindings are in memory. **Decision:** single frontend worker for local prototype; shared state and atomic multi-worker semantics require a separate design before scaling.
+4. **Revocation:** local logout/rotation invalidates issued hash verification; issuer checks do not independently confirm remote backend revocation. **Decision:** retain backend session validation for protected API calls; cover remote revocation and race behavior in later tests.
+5. **Resource limits:** issuance is capped per authenticated browser (default eight). This is not a comprehensive rate-limit, CSRF, or resource-exhaustion defense for public deployment.
+
+**Documentation-only Git follow-up:** The source commit `4818f23` is already pushed. Commit the README and architecture documentation separately with `docs:` after reviewing the staged diff. Keep `docs/research/` and the two `tests/evaluation/phase447c_*.local.json` files untracked unless explicitly approved.
