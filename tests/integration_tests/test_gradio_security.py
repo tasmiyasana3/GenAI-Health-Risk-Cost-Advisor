@@ -152,20 +152,23 @@ def test_forged_cookie_cannot_access_gradio(client):
     assert response.status_code == 401
 
 
-def test_authenticated_browser_can_access_shell(client):
-    """
-    A recognized browser identity can load the
-    restricted, non-interactive Gradio shell.
 
-    This is not an authenticated user-account test.
+def test_anonymous_browser_cannot_access_protected_shell(client):
+    """
+    A registered browser identity is not sufficient
+    to access the authenticated Gradio application.
+
+    This replaces the Phase 5.2.5B anonymous-shell
+    expectation following Phase 5.2.6B wiring.
     """
 
     bootstrap_browser(client)
 
     response = client.get("/ui/")
 
-    assert response.status_code == 200
-    assert "Health Risk" in response.text
+    assert response.status_code in {
+        302, 303, 307, 401, 403
+    }
 
 
 def test_theme_css_is_not_blocked_by_security_gate(client):
@@ -236,7 +239,6 @@ def test_protected_gradio_routes_fail_closed(
     [
         "/ui/unknown",
         "/ui/private",
-        "/ui/config",
         "/ui/theme.css/private",
         "/ui/gradio_api/",
         "/ui/assets/",
@@ -250,6 +252,18 @@ def test_unknown_routes_fail_closed(client, path):
     response = client.get(path)
 
     assert response.status_code == 403
+
+
+def test_gradio_config_rejects_anonymous_browser(client):
+    """
+    A registered anonymous browser must not access
+    the protected Gradio configuration endpoint.
+    """
+    bootstrap_browser(client)
+
+    response = client.get("/ui/config")
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -303,8 +317,10 @@ def test_two_browser_clients_receive_different_cookies():
         assert second_cookie
         assert first_cookie != second_cookie
 
-        assert first_client.get("/ui/").status_code == 200
-        assert second_client.get("/ui/").status_code == 200
+        # Both browsers have cookies but are not logged in.
+        # Neither may access the protected Gradio interface.
+        assert first_client.get("/ui/").status_code == 401
+        assert second_client.get("/ui/").status_code == 401
 
 
 def test_unrecognized_mount_path_is_not_authorized():

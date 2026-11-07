@@ -90,6 +90,8 @@ from frontend.auth_origin import (
 )
 from frontend.auth_page import render_auth_page
 from frontend.browser_session_binding import BrowserSessionBinding
+from frontend.gradio_auth import GradioAuthenticationAdapter
+from frontend.gradio_session_issuer import TrustedGradioSessionIssuer
 from frontend.gradio_security import GradioSecurityGate
 from frontend.http_session import (
     HTTPSessionCookies,
@@ -267,6 +269,11 @@ def create_app(
     )
 
     gate = GradioSecurityGate(cookies)
+    gradio_auth = GradioAuthenticationAdapter(
+        cookies=cookies,
+        binding=binding,
+    )
+    gradio_sessions = TrustedGradioSessionIssuer(binding)
 
     client = (
         api_client
@@ -370,6 +377,22 @@ def create_app(
         Request-body limiting is handled separately by the
         supported ASGI middleware above.
         """
+
+        # Gradio configuration is needed by the authenticated UI.
+        # It is still read-only and requires server-side credentials.
+        if (
+            request.url.path == '/ui/config'
+            and request.method in ('GET', 'HEAD')
+        ):
+            if gradio_auth(request) is None:
+                return JSONResponse(
+                    {'detail': 'Authentication required.'},
+                    status_code=401,
+                    headers={'Cache-Control': 'no-store'},
+                )
+            response = await call_next(request)
+            response.headers['Cache-Control'] = 'no-store'
+            return response
 
         denial = await gate.authorize(request)
 
@@ -757,10 +780,54 @@ def create_app(
                 status_code=200,
             )
 
+        gradio_sessions.revoke(identity)
         cookies.clear_identity(response)
         response.headers["Cache-Control"] = "no-store"
 
         return response
+
+    # ---------------------------------------------------------
+    # 8A. Server-issued Gradio session identifiers
+    # ---------------------------------------------------------
+
+    @application.post(
+        "/frontend-gradio/session",
+        include_in_schema=False,
+    )
+    def issue_gradio_session(request: Request):
+        """Mint a browser-bound session hash; never accept one from input.
+
+        This endpoint does not enable Gradio event or queue routes.
+        """
+        denial = origin_denial(request)
+        if denial is not None:
+            return denial
+
+        identity = gradio_auth(request)
+        if identity is None:
+            return JSONResponse(
+                {"detail": "Authentication required."},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        try:
+            session_hash = gradio_sessions.issue(identity)
+        except FrontendAPIError:
+            return JSONResponse(
+                {"detail": "Gradio session unavailable."},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        return JSONResponse(
+            {"session_hash": session_hash},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
 
     # ---------------------------------------------------------
     # 9. Restricted Gradio shell
@@ -784,6 +851,7 @@ def create_app(
         application,
         shell,
         path="/ui",
+        auth_dependency=gradio_auth,
     )
 
     # ---------------------------------------------------------
@@ -795,6 +863,8 @@ def create_app(
     application.state.browser_binding = binding
     application.state.session_cookies = cookies
     application.state.auth_coordinator = coordinator
+    application.state.gradio_auth = gradio_auth
+    application.state.gradio_sessions = gradio_sessions
 
     return application
 
