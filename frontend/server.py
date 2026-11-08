@@ -92,6 +92,7 @@ from frontend.auth_page import render_auth_page
 from frontend.browser_session_binding import BrowserSessionBinding
 from frontend.gradio_auth import GradioAuthenticationAdapter
 from frontend.gradio_session_issuer import TrustedGradioSessionIssuer
+from frontend.gradio_execution_authorizer import GradioExecutionAuthorizer
 from frontend.gradio_security import GradioSecurityGate
 from frontend.http_session import (
     HTTPSessionCookies,
@@ -274,6 +275,7 @@ def create_app(
         binding=binding,
     )
     gradio_sessions = TrustedGradioSessionIssuer(binding)
+    gradio_authorizer = GradioExecutionAuthorizer(gradio_sessions)
 
     client = (
         api_client
@@ -830,6 +832,85 @@ def create_app(
         )
 
     # ---------------------------------------------------------
+    # 8B. Secure, FastAPI-controlled execution boundary
+    # ---------------------------------------------------------
+
+    @application.post(
+        "/frontend-gradio/execute",
+        include_in_schema=False,
+    )
+    async def execute_protected_gradio_probe(request: Request):
+        """Execute a minimal authenticated operation without Gradio's queue.
+
+        This endpoint is deliberately separate from Gradio's client-generated
+        session_hash and its callback/validator/cache machinery. The existing
+        Gradio HTTP gate continues to deny every event and queue endpoint.
+        """
+        denial = origin_denial(request)
+        if denial is not None:
+            return denial
+
+        identity = gradio_auth(request)
+        if identity is None:
+            return JSONResponse(
+                {"detail": "Authentication required."},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        # Reject oversized bodies before JSON decoding; this endpoint has
+        # a deliberately small and fixed request schema.
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return JSONResponse(
+                {"detail": "JSON request required."},
+                status_code=415,
+                headers={"Cache-Control": "no-store"},
+            )
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 256:
+                return JSONResponse(
+                    {"detail": "Request too large."},
+                    status_code=413,
+                    headers={"Cache-Control": "no-store"},
+                )
+        try:
+            import json
+            body = json.loads(raw)
+            if not isinstance(body, dict) or set(body) != {"session_hash"}:
+                raise ValueError("Invalid request shape")
+            session_hash = body["session_hash"]
+            if not isinstance(session_hash, str) or len(session_hash) > 128:
+                raise ValueError("Invalid session identifier")
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return JSONResponse(
+                {"detail": "Invalid request."},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        try:
+            # Revalidate current ownership and server-side credentials
+            # immediately before performing any protected operation.
+            gradio_authorizer.authorize(identity, session_hash)
+        except FrontendAPIError:
+            return JSONResponse(
+                {"detail": "Session not authorized."},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        return JSONResponse(
+            {"verified": True},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
+
+    # ---------------------------------------------------------
     # 9. Restricted Gradio shell
     # ---------------------------------------------------------
 
@@ -865,6 +946,7 @@ def create_app(
     application.state.auth_coordinator = coordinator
     application.state.gradio_auth = gradio_auth
     application.state.gradio_sessions = gradio_sessions
+    application.state.gradio_authorizer = gradio_authorizer
 
     return application
 

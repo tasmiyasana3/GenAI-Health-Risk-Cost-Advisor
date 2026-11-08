@@ -1,6 +1,6 @@
 # GenAI Health Risk & Cost Advisor — V3
 
-**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 5.2.6B server-side trusted Gradio session issuance and authentication integration (7 November 2026) · **Commit:** `4818f23` · **Next:** Phase 5.2.6C interactive callback/queue execution-time authorization
+**Status:** Local development prototype · **Branch:** `version_3` · **Verified through:** Phase 5.2.6C FastAPI-controlled execution boundary (8 November 2026) · **Last committed source:** `4818f23` (Phase 5.2.6B) · **Next:** Phase 5.2.6D–E resource authorization, adversarial closure and UI integration
 
 An insurance analytics and policy-document intelligence project combining an existing scikit-learn insurance-cost prediction workflow with a FastAPI-based, retrieval-augmented generation (RAG) backend. Users can authenticate, upload text-based **insurance policy PDFs**, and ask evidence-grounded questions about one or more policies.
 
@@ -19,6 +19,7 @@ An insurance analytics and policy-document intelligence project combining an exi
 | Backward compatibility | Pre-migration ownerless document records are preserved by cleanup but excluded from authenticated document access. |
 | Secured frontend HTTP boundary | Separate FastAPI/Gradio ASGI shell with opaque HttpOnly browser identity, server-side authentication credentials, trusted-Origin validation, backend-connected login/refresh/logout, browser identity rotation, and fail-closed Gradio routes. Interactive `/auth` registration and login UI is enabled; restricted Gradio events, queue, uploads and file routes remain blocked. |
 | Phase 5.2.6B Gradio authentication and trusted session issuance | `GradioAuthenticationAdapter` integrates Gradio `auth_dependency` with the server-side browser binding. `TrustedGradioSessionIssuer` mints unpredictable browser-owned session hashes through `POST /frontend-gradio/session`, checks ownership and current local authentication, and rejects forged/cross-browser hashes. The Gradio browser client is **not yet consuming these hashes**; protected callbacks and resources remain blocked. |
+| Phase 5.2.6C FastAPI-controlled protected execution | `GradioExecutionAuthorizer` checks current browser identity, server-issued hash ownership and server-held access credentials. `POST /frontend-gradio/execute` uses trusted-Origin and authenticated-cookie checks, a strict JSON request schema and small body limit, then reauthorizes immediately before its minimal protected verification operation. Native Gradio callbacks/queues and file/upload routes remain blocked; this is **not** a functioning policy dashboard or native queue implementation. |
 
 **Phase 4.4.6A verification summary (31 October 2026):** Phase 4.4.6A technical verification is complete: **6 focused document-cleanup integration tests passed**, **40 integration tests passed**, and **252 tests passed** in the database-enabled full regression run. Manual testing also verified independent logins for two users and two sessions for one user, with cross-user and cross-session document isolation. The earlier **184 passed / 29 skipped** Phase 4.4.6 result and **205 passed / 29 skipped** 30 October result are retained below as dated historical checkpoints, not the latest overall result. Full concurrency/load testing is still planned for Phase 6.
 
@@ -78,7 +79,11 @@ GenAI-Health-Risk-Cost-Advisor/
 │   ├── session_manager.py       # Server-side token lifecycle
 │   ├── browser_session_binding.py
 │   ├── http_session.py
-│   └── gradio_security.py       # Fail-closed route gate
+│   ├── gradio_security.py       # Fail-closed native event/queue/file gate
+│   ├── gradio_auth.py           # Authenticated Gradio shell dependency
+│   ├── gradio_session_issuer.py # Server-issued browser-owned session hashes
+│   ├── gradio_execution_authorizer.py # Current ownership/credential check
+│   └── gradio_protected_callbacks.py # Prepared callback; not mounted/enabled
 ├── services/                    # Application and RAG business logic
 │   ├── auth_service.py           # Authentication and related session services
 │   ├── document_service.py       # Policy ingestion and document operations
@@ -183,6 +188,8 @@ A policy is bound to an authenticated user **and** a login session. Successful a
 | **4.4.7C** | Deterministic multi-topic query planning, bounded per-policy/topic retrieval and globally reranked evidence selection; synthetic before/after evaluation and regression tests. | **Complete — 3 November 2026; 266 passed, 35 skipped, 12 subtests passed in the full suite; 28 targeted tests passed in a subsequent local rerun.** |
 | **5.2.4** | Server-side frontend authentication coordinator, backend-connected login/refresh/logout, Origin validation, opaque cookie and browser identity rotation. | **Verified 5 November 2026; guarded database-enabled suite 470 passed, 12 subtests passed.** |
 | **5.2.5B** | Interactive `/auth` registration/login UI, safe errors, CSP/security headers, bounded auth request bodies through ASGI, and updated Gradio security tests. | **Verified 6 November 2026; new auth tests 28 passed, Gradio tests 38 passed, full default suite 464 passed, 35 skipped, 12 subtests passed.** |
+| **5.2.6A–B** | Gradio 6.30.0 trust-boundary review; authenticated `auth_dependency`; browser-owned server-issued hashes, logout/rotation revocation and forged-hash rejection. | **Verified 7 November 2026; 15 targeted tests and 520 passed / 35 skipped / 12 subtests in the full suite; source commit `4818f23`, documentation commit `aca267b`.** |
+| **5.2.6C** | FastAPI-controlled protected execution probe; per-request issuer ownership and credential authorization; default-deny native Gradio route regression tests. | **Verified 8 November 2026; focused 26 passed, full regression 546 passed / 35 skipped / 12 subtests; subsequently expanded integration test file 12 passed. Native callbacks/queue remain disabled.** |
 
 ### Phase 4.4.6 — Temporary document lifecycle (29 October checkpoint)
 
@@ -283,7 +290,7 @@ These checks establish local behavior for the tested paths, not comprehensive se
 
 ## Development progress and end-to-end roadmap
 
-**Current checkpoint (6 November 2026):** Phase 5.2.5B interactive authentication UI and local HTTP security hardening are verified: 28 new authentication tests, 38 Gradio security tests, and a default full-suite run of 464 passed / 35 skipped / 12 subtests passed. The next engineering milestone is Phase 5.2.6 Gradio event/resource ownership. Earlier checkpoints remain below as historical evidence. Later Phase 5 work and Phases 6–8 remain future work. This is a milestone status, **not** a claim that the overall product is production-ready or a percentage-complete estimate.
+**Current checkpoint (8 November 2026):** Phase 5.2.6C FastAPI-controlled execution boundary and default-deny native Gradio security are locally verified: 26 focused tests passed, 546 passed / 35 skipped / 12 subtests in the last reported full regression, followed by 12 passed in the expanded integration test file. Native Gradio callbacks and queues are deliberately disabled. Phase 5.2.6D/E and Phase 5.3 remain to be implemented. Earlier checkpoints remain below as historical evidence. Later Phase 5 work and Phases 6–8 remain future work. This is a milestone status, **not** a claim that the overall product is production-ready or a percentage-complete estimate.
 
 | Phase | Objective and planned deliverables | Status |
 | --- | --- | --- |
@@ -297,7 +304,7 @@ These checks establish local behavior for the tested paths, not comprehensive se
 | **4.4.6 — Temporary policy-document lifecycle** | Session-scoped document ownership; 30-minute inactivity expiry; logout and optional scheduled cleanup of PostgreSQL/ChromaDB; advisory locks; migration 007; unit/integration/API coverage. | **Complete — 184 passed, 29 skipped; live deletion checks passed** |
 | **4.4.6A — Multi-user and multi-session security verification** | Manual cross-user/cross-session API checks, isolated storage guards, cleanup and lock integration tests. | **Complete — 31 October 2026** |
 | **4.4.7 — Retrieval efficiency and evidence coverage** | Instrument request stages; evaluate 10 synthetic cases at K=6/K=16; implement deterministic multi-topic retrieval and bounded topic-aware evidence selection; compare frozen baseline and post-change results. | **4.4.7A–C complete — 3 November 2026; no Phase 4.4.7D** |
-| **5 — Authenticated user interface** | Phase 5.1 architecture, 5.2.1–5.2.4 authentication foundations and 5.2.5B interactive registration/login UI are implemented; Gradio event/resource ownership and policy workflows remain. | **In progress — 5.2.5B verified locally; 5.2.6 next** |
+| **5 — Authenticated user interface** | Phase 5.1 architecture, 5.2.1–5.2.4 authentication foundations, 5.2.5B browser auth, 5.2.6A–B trusted session issuance and 5.2.6C FastAPI-controlled execution boundary are implemented; native Gradio event/queue/file routes and policy UI remain restricted. | **In progress — 5.2.6C locally verified; 5.2.6D/E and 5.3 pending** |
 | **6 — End-to-end reliability and security** | Validate full user journeys and failure recovery; concurrent user logins/sessions and overlapping upload/query/delete stress tests; multi-worker scheduler coordination; privacy/security review, negative authorization tests, robust error handling, structured logging/observability and operational safeguards. | **Planned** |
 | **7 — Systematic RAG evaluation and performance** | Broader synthetic insurance-policy benchmark; retrieval relevance/coverage, citation faithfulness, answer correctness, latency and resource measurements; compare approaches and document limitations. | **Planned** |
 | **8 — CI/CD and deployment** | Containerization as appropriate; GitHub Actions test/migration gates; durable database/vector storage; secret management; backup/restore; hosting-cost review; staging and remote smoke tests. | **Planned — deployment decisions not finalized** |
@@ -867,3 +874,81 @@ The full-suite result is the user's Mac result. The 35 skipped tests must not be
 5. **Resource limits:** issuance is capped per authenticated browser (default eight). This is not a comprehensive rate-limit, CSRF, or resource-exhaustion defense for public deployment.
 
 **Documentation-only Git follow-up:** The source commit `4818f23` is already pushed. Commit the README and architecture documentation separately with `docs:` after reviewing the staged diff. Keep `docs/research/` and the two `tests/evaluation/phase447c_*.local.json` files untracked unless explicitly approved.
+
+Phase 5.2.6C SECURITY BOUNDARY — SAFE INCREMENT, NOT FINAL GRADIO EVENT INTEGRATION
+
+This package contains COMPLETE replacement frontend/server.py and unchanged
+frontend/gradio_security.py for comparison. It adds a FastAPI-controlled
+protected probe /frontend-gradio/execute. It deliberately leaves Gradio
+callback, queue, file and upload routes BLOCKED. Do not claim that full
+Gradio interactive execution is complete.
+
+Prerequisite: frontend/gradio_execution_authorizer.py already created by user.
+
+To use, copy the complete server.py replacement into your project, preserving
+backups. Run new integration tests and full suite after modifications.
+
+No Git staging/commit until Phase 5.2.6E.
+
+---
+
+## Phase 5.2.6C — FastAPI-controlled execution security and native Gradio default-deny verification (8 November 2026)
+
+**Status:** Implemented and locally regression-tested **within the FastAPI-controlled boundary only**. Phase 5.2.6A–B were already documented above and committed (`4818f23` source, `aca267b` documentation). Phase 5.2.6C changes are not yet committed at the time of this documentation update. This milestone **does not complete all of Phase 5.2.6**: D/E remain pending.
+
+### Security problem and design choice
+
+Gradio 6.30.0 uses a browser-provided `session_hash` for its native callback and queue routing. That identifier is **not an authentication credential** and cannot prove that the requesting browser owns the server-side login session. Simply opening `/ui/call/*` or `/ui/queue/join` would risk entering Gradio's preprocessing, validator, cache or queue paths before authorization, and delayed jobs would require reauthorization after logout. The team therefore **did not enable native Gradio events or attempt an undocumented browser JavaScript hash override**.
+
+Instead, the project uses a narrowly scoped **FastAPI-controlled** endpoint and keeps the native Gradio event, queue, upload and file-serving routes denied by the existing gate. This avoids treating a client-generated Gradio routing identifier as trusted proof of identity. The protected operation currently returns only a minimal session-verification result, not policy upload, prediction, retrieval or Q&A.
+
+### Implemented request journey
+
+```text
+Browser with opaque HttpOnly cookie
+  -> POST /frontend-gradio/session (authenticated, trusted Origin)
+  -> TrustedGradioSessionIssuer issues random browser-owned session_hash
+  -> POST /frontend-gradio/execute (trusted Origin + authenticated cookie)
+       -> require application/json and exact {"session_hash": "..."} shape
+       -> reject oversized (>256-byte) or invalid request bodies
+       -> GradioExecutionAuthorizer.authorize(identity, session_hash)
+            -> issuer.verify: current browser ownership + live local binding
+            -> SessionCredentialManager.get_access_token()
+       -> {"verified": true} with no-store and defensive response headers
+
+Native /ui/call/*, /ui/queue/*, /ui/upload*, /ui/file* remain blocked.
+```
+
+**Files involved:** `frontend/server.py` (endpoint and dependency wiring), `frontend/gradio_execution_authorizer.py` (ownership/credential verification), `frontend/gradio_session_issuer.py` (existing B-phase issuer), `frontend/gradio_auth.py` (existing browser authentication), `frontend/gradio_security.py` (unchanged deny-by-default route gate), and `frontend/gradio_protected_callbacks.py` (prepared but **not wired to native Gradio**). The browser authentication page `frontend/auth_page.py` did not need an undocumented Gradio client-side hash override.
+
+### Verification evidence (user-reported, 8 November 2026)
+
+| Verification | Result | Interpretation |
+| --- | --- | --- |
+| Focused Phase 5.2.6C tests | **26 passed** | Reported targeted security and callback/authorizer tests |
+| Full regression after the C implementation | **546 passed, 35 skipped, 12 subtests passed** | No failures reported in executed tests; skips are not passes |
+| Expanded `test_phase526c_secure_execution_boundary.py` | **12 passed** | Includes four new parametrized anonymous native-route rejection cases |
+| Manual unauthenticated native-route probes | **HTTP 401** for all four routes | Confirms denial of the tested anonymous requests, not native callback safety |
+
+The four manually observed denial routes were `POST /ui/queue/join`, `POST /ui/call/v2/verify_session`, `POST /ui/call/verify_session`, and `GET /ui/queue/data?session_hash=forged`. The integration suite also contains an authenticated native-route denial assertion. The **12-test rerun occurred after** the last reported 546-test full-suite checkpoint; no new full-suite total is asserted for that later change.
+
+### Accepted protections and remaining risks
+
+- **Implemented and tested within current scope:** server-issued hash verification against authenticated browser ownership; current local credential availability; trusted-Origin and request-schema checks at the FastAPI-controlled boundary; denied anonymous native event/queue routes; unchanged fail-closed native gate; no backend JWT/refresh credentials returned to browser.
+- **Not implemented or proven:** native Gradio callback execution, queue admission/preprocessing authorization, delayed queued-job revocation checks, per-event queue-result ownership, native file/upload authorization, interactive insurance-policy UI, full concurrency/remote-revocation testing, rate limiting or independent security audit.
+- **Single-worker assumption:** browser bindings, credential managers and issuer ownership maps are process-local. Multiple workers require shared state and reviewed revocation/atomicity semantics.
+- **Backend remains authoritative:** a frontend verification result does not independently prove a PostgreSQL-backed backend session is active. Backend APIs must still validate JWT, current database session, and policy document user/session ownership.
+
+### Reproducible local tests (free; no Gemini calls)
+
+```bash
+python -m pytest tests/integration_tests/test_phase526c_secure_execution_boundary.py -q
+python -m pytest tests/unit_tests/test_gradio_execution_authorizer.py tests/unit_tests/test_gradio_protected_callbacks.py -q
+python -m pytest -q
+```
+
+Use isolated test services as specified by the test fixtures. Do not run destructive opt-in database integration tests against the working application database.
+
+### Engineering decision / next milestone
+
+**Decision:** Keep the FastAPI-controlled execution boundary as the active protected path; native Gradio callback/queue routes remain **intentionally disabled and regression-tested**. Enabling them in a future phase requires separately demonstrated admission-time ownership authorization, execution-time reauthorization, queue-result isolation and logout/expiry race tests. Phase **5.2.6D** must address authenticated PDF upload and resource access, and **5.2.6E** must reconcile adversarial verification, issue log and phase closure. Phase **5.3** remains the interactive insurance-cost and policy intelligence workflow integration. No paid services are needed for this verification.

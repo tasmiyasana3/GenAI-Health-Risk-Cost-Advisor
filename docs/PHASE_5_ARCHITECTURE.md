@@ -3,12 +3,12 @@
 
 **Project:** GenAI Health Risk & Cost Advisor V3  
 **Branch:** `version_3`  
-**Last updated:** 7 November 2026  
+**Last updated:** 8 November 2026
 **Frontend:** FastAPI with mounted Gradio 6.30.0  
 **Backend:** FastAPI, PostgreSQL-backed authentication and document ownership  
-**Latest source commit:** `4818f23` — `feat(auth): complete Phase 5.2.6B trusted Gradio sessions`  
-**Current milestone:** Phase 5.2.6B server-side implementation complete and verified  
-**Next milestone:** Phase 5.2.6C — trusted Gradio client integration, callback and queue authorization
+**Latest confirmed source commit before Phase 5.2.6C staging:** `4818f23` — `feat(auth): complete Phase 5.2.6B trusted Gradio sessions` (documentation commit: `aca267b`)
+**Current milestone:** Phase 5.2.6C FastAPI-controlled secure execution boundary implemented and locally tested; native Gradio execution remains disabled
+**Next milestone:** Phase 5.2.6D/E resource authorization and security closure; native Gradio callback/queue integration is deferred and must be separately security-verified before enablement
 
 ---
 
@@ -26,7 +26,7 @@ The architecture must preserve the security guarantees established in Phase 4, p
 
 Phase 5 is being implemented incrementally.
 
-**Phase 5.2.6B is not the completed interactive dashboard.** It establishes server-side authentication integration and trusted Gradio session-issuance primitives.
+**Phase 5.2.6B is not the completed interactive dashboard.** It establishes server-side authentication integration and trusted Gradio session-issuance primitives. Phase 5.2.6C subsequently added a FastAPI-controlled execution boundary without enabling native Gradio events.
 
 ---
 
@@ -120,6 +120,7 @@ Responsibilities:
 - Mount Gradio under `/ui`.
 - Connect Gradio to the authentication adapter.
 - Issue trusted Gradio session identifiers.
+- Expose a protected FastAPI execution boundary at `POST /frontend-gradio/execute`.
 - Preserve restricted access to unapproved Gradio routes.
 
 Current endpoint examples:
@@ -133,10 +134,11 @@ Current endpoint examples:
 | `GET /frontend-auth/status` | Check frontend authentication status |
 | `POST /frontend-auth/logout` | End the frontend session and attempt backend logout |
 | `POST /frontend-gradio/session` | Issue a trusted, server-generated Gradio session identifier |
+| `POST /frontend-gradio/execute` | Execute the currently supported protected operation after trusted-Origin, authenticated browser, and issued-session ownership checks |
 | `/ui` | Restricted mounted Gradio interface |
 | `/ui/config` | Authenticated Gradio configuration access |
 
-The session-issuance endpoint does not enable interactive callbacks.
+The session-issuance endpoint does not enable native interactive callbacks. The Phase 5.2.6C execution endpoint is a separate FastAPI-controlled path; native Gradio event and queue routes remain blocked.
 
 ### 4.2 `frontend/auth_page.py`
 
@@ -382,13 +384,9 @@ Previously issued hashes cannot verify against a different identity.
 
 Termination of the underlying local authentication also prevents subsequent issuer verification.
 
-### 5.5 Current limitation
+### 5.5 Current limitation and Phase 5.2.6C decision
 
-The actual Gradio browser client is **not yet configured to use these server-issued identifiers**.
-
-Therefore, the trusted issuer is implemented and verified as a server-side component, but the full browser-to-Gradio execution path is not yet complete.
-
-Phase 5.2.6C must resolve this before callbacks are enabled.
+The native Gradio browser client is **not configured to use server-issued identifiers**. Instead of overriding undocumented Gradio client internals, Phase 5.2.6C introduced a separate FastAPI-controlled execution path that validates issued identifiers. The native browser-to-Gradio event/queue path remains disabled and is not claimed as verified.
 
 ---
 
@@ -507,7 +505,7 @@ These results do not establish production readiness or complete interactive Grad
 
 **Decision:** Keep event and queue routes denied until execution-time checks are verified.
 
-**Status:** Open for Phase 5.2.6C.
+**Status:** Mitigated for the FastAPI-controlled execution path in Phase 5.2.6C; native callback/queue execution remains intentionally disabled.
 
 ### P5.2.6-03 — Process-local authentication state
 
@@ -523,7 +521,7 @@ These results do not establish production readiness or complete interactive Grad
 
 **Decision:** Keep backend authorization authoritative; verify execution-time behavior and revocation races in subsequent phases.
 
-**Status:** Open for Phase 5.2.6C and broader security verification.
+**Status:** Backend authority preserved; remote revocation visibility, races and broader security verification remain open.
 
 ### P5.2.6-05 — Resource exposure
 
@@ -545,9 +543,9 @@ These results do not establish production readiness or complete interactive Grad
 
 ---
 
-## 10. Phase 5.2.6C — Next implementation
+## 10. Phase 5.2.6C — Original implementation requirements (historical plan)
 
-**Goal:** Safely connect server-issued sessions to real Gradio interactions.
+**Original goal:** Safely connect server-issued sessions to real Gradio interactions. The later implementation deliberately chose a separate FastAPI execution boundary instead; the native Gradio-specific requirements below remain prerequisites if native execution is ever enabled.
 
 Required work:
 
@@ -683,10 +681,103 @@ tests/evaluation/phase447c_retrieval_results.local.json
 
 **Phase 5.2.6B: COMPLETE for its server-side authentication and trusted-session-issuance scope.**
 
-**Phase 5.2.6C: NOT STARTED.**
+**Phase 5.2.6C: COMPLETE for the FastAPI-controlled secure execution boundary; native Gradio callback/queue execution is not enabled.**
 
 The architecture is intentionally fail-closed.
 
 Interactive Gradio callbacks, queues, uploads and file-serving operations remain blocked until their authorization paths are implemented and verified.
 
-**Next engineering action:** Begin Phase 5.2.6C with the Gradio 6.30.0 client/session lifecycle and the execution-time authorization contract.
+**Next engineering action:** Proceed to Phase 5.2.6D/E resource authorization and security closure. Revisit native Gradio event/queue integration only with admission, execution and result-ownership protections and dedicated verification.
+
+### Phase 5.2.6C — Native Gradio Route Security Verification
+
+**Status:** FastAPI-controlled execution boundary implemented and regression-tested. Native Gradio execution intentionally disabled.
+
+**Verification results (8 November 2026):**
+- Phase 5.2.6C integration tests: 12 passed.
+- Full regression suite: 546 passed, 35 skipped, 12 subtests passed (prior run).
+- Anonymous requests to `/ui/queue/join`, `/ui/call/v2/verify_session`, `/ui/call/verify_session`, and `/ui/queue/data` were rejected with HTTP 401.
+- The existing authenticated-route denial test remains part of the integration suite.
+
+**Security decisions:**
+
+1. The FastAPI-controlled `/frontend-gradio/execute` endpoint remains the protected execution boundary.
+2. Server-issued session hashes are validated against authenticated browser ownership before protected execution.
+3. Native Gradio event and queue endpoints remain blocked by the default-deny security gate.
+4. Native Gradio callbacks, queue execution, and queue-result access have not been enabled or security-verified.
+5. Insurance-policy upload and file-serving endpoints remain outside the enabled native Gradio execution surface.
+
+**Residual limitations:**
+
+The current tests demonstrate that the configured routes reject the tested unauthorized requests. They do not establish security for native Gradio event processing, queued-job execution, or cross-browser result retrieval if those routes are enabled later.
+
+**Future requirement:**
+
+Before enabling native Gradio events, implement and verify admission-time authorization, execution-time reauthorization, queue-result ownership checks, and revocation behavior following logout or session expiry.
+
+**Engineering decision:** Keep native Gradio event and queue routes disabled unless a future feature explicitly requires them and the additional security controls have been implemented and tested.
+
+---
+
+## 17. Phase 5.2.6C — Implementation and security closure record (8 November 2026)
+
+### 17.1 Scope and implementation files
+
+This section updates the historical Phase 5.2.6B architecture and planning sections above; it does not erase earlier decisions or test checkpoints. Phase 5.2.6C implements a **FastAPI-controlled** execution path, not native Gradio callback or queue processing.
+
+- `frontend/server.py`: adds `POST /frontend-gradio/execute` as a controlled, authenticated frontend entry point with trusted-Origin checks, bounded request handling and server-issued session ownership verification before invoking the supported protected operation.
+- `frontend/gradio_execution_authorizer.py`: resolves the issued hash against the authenticated browser, verifies the current credential manager and obtains the server-held access credential for authorized execution. Backend authorization remains authoritative.
+- `frontend/gradio_protected_callbacks.py`: contains a request-context authorization helper for possible future native callback use; this is **not** evidence that native callbacks are registered or enabled.
+- `frontend/gradio_session_issuer.py` and `frontend/gradio_auth.py`: existing Phase 5.2.6B issuer and authentication adapter are reused.
+- `frontend/gradio_security.py`: retains default-deny native Gradio event, queue, upload and file routes. No broad allowlist was introduced.
+- `tests/unit_tests/test_gradio_execution_authorizer.py`, `tests/unit_tests/test_gradio_protected_callbacks.py`, and `tests/integration_tests/test_phase526c_secure_execution_boundary.py`: targeted authorization and endpoint regressions.
+
+### 17.2 Security issues, decisions and outcomes
+
+| Issue / threat | Mitigation or decision | Verification scope / residual risk |
+| --- | --- | --- |
+| Client-generated Gradio session hash cannot prove ownership | Require a trusted, server-issued hash for the FastAPI execution boundary | Does not change native Gradio client hash behavior |
+| Authenticated page is not authorization to execute an event | Revalidate authenticated browser and issuer ownership before protected FastAPI execution | Native Gradio preprocessing and callbacks remain blocked |
+| Cross-browser or forged hash reuse | Verify browser-to-issued-hash ownership, reject missing or unknown identifiers | Covered by focused tests; not a general penetration test |
+| Logout, rotation and local session revocation | Issuer verification re-resolves current local authentication | Backend remote revocation is enforced by backend protected operations; asynchronous race coverage remains future work |
+| Queue submission may preprocess or validate inputs before callback | Keep native `/ui/queue/join` and `/ui/call/*` routes denied | Native queue execution is not tested as enabled |
+| Queue-result leakage | Keep `/ui/queue/data` and native result routes denied | Ownership enforcement required before future enablement |
+| Unreviewed upload and file routes | Keep native Gradio upload/file access disabled | Dedicated Phase 5.2.6D implementation pending |
+| Process-local session state | Maintain one frontend worker for the local prototype | Shared multi-worker state and distributed coordination remain future work |
+
+### 17.3 Verified checkpoints (user-reported terminal output)
+
+- Earlier Phase 5.2.6B full default suite: **520 passed, 35 skipped, 12 subtests passed**.
+- Phase 5.2.6C intermediate full suite: **532 passed, 35 skipped, 12 subtests passed**.
+- Phase 5.2.6C focused tests after the protected execution implementation: **26 passed**.
+- Phase 5.2.6C full default regression: **546 passed, 35 skipped, 12 subtests passed**.
+- Subsequent integration test rerun after adding anonymous native-route denial cases: **12 passed**. The full 546-test suite was **not reported rerun after that final test-only change**.
+- Manual unauthenticated requests to `/ui/queue/join`, `/ui/call/v2/verify_session`, `/ui/call/verify_session`, and `/ui/queue/data?session_hash=forged` each returned **HTTP 401**. The corresponding anonymous denial cases were then added to automated integration coverage.
+
+These are local, user-reported results. They do not establish production security, native queue authorization, or external penetration-test coverage.
+
+### 17.4 Operational flow and remaining acceptance boundaries
+
+```text
+Authenticated browser + opaque HttpOnly cookie
+       |
+       +--> POST /frontend-gradio/session
+       |       -> trusted Origin + current browser identity
+       |       -> server-issued, browser-owned session_hash
+       |
+       +--> POST /frontend-gradio/execute
+               -> trusted Origin and bounded request
+               -> current authenticated browser identity
+               -> verify server-issued session_hash ownership
+               -> protected FastAPI operation
+               -> backend JWT + active DB session and document ownership
+
+/ui/call/*, /ui/queue/*, native uploads and files
+       -> remain denied by GradioSecurityGate
+```
+
+The FastAPI execution boundary must not be described as full interactive Gradio dashboard integration. Before native events are enabled, implement **admission-time checks before preprocessing, execution-time reauthorization, queue/result ownership validation and logout/expiry race tests**. Phase 5.2.6D/E still cover authenticated PDF resource handling, additional adversarial tests, issue-log reconciliation and the final broader Phase 5.2.6 closure.
+
+### 17.5 Version-control and documentation discipline
+
+The last confirmed committed source checkpoint is `4818f23` (Phase 5.2.6B), with documentation commit `aca267b`. The Phase 5.2.6C code and documentation should be staged explicitly and reviewed before committing. The Phase 5.2.6C commit hash is **not known** at documentation-authoring time. Do not stage local evaluation artifacts, secrets, vector stores, or unrelated research files. No paid APIs or infrastructure were required for the reported tests.
